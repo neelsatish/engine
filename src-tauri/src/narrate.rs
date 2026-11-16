@@ -57,6 +57,29 @@ impl Pacer {
     }
 }
 
+/// Text split into sentences for speaking one at a time; very short ones ride along with the next.
+pub fn sentences(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        current.push(c);
+        // A sentence ends at . ! ? or a line break followed by a space, so "rain.txt" stays whole.
+        let ends = matches!(c, '.' | '!' | '?' | '\n') && chars.peek().is_none_or(|n| n.is_whitespace());
+        if ends && current.trim().len() >= 16 {
+            out.push(current.trim().to_string());
+            current.clear();
+        }
+    }
+    if !current.trim().is_empty() {
+        match out.last_mut() {
+            Some(last) if current.trim().len() < 12 => *last = format!("{last} {}", current.trim()),
+            _ => out.push(current.trim().to_string()),
+        }
+    }
+    out
+}
+
 /// A report cut down for speaking: no markdown, links or file paths, and only its first sentences.
 pub fn overview(report: &str) -> String {
     const LIMIT: usize = 200; // about ten seconds spoken
@@ -106,6 +129,13 @@ mod tests {
         assert!(!p.allow("Reading", t + Duration::from_secs(2))); // too soon
         assert!(!p.allow("Writing", t + Duration::from_secs(9))); // not new
         assert!(p.allow("Reading", t + Duration::from_secs(9)));
+    }
+
+    #[test]
+    fn speaks_a_sentence_at_a_time() {
+        let s = sentences("Done: Write a poem. It's saved as rain.txt in the job folder. Ok.");
+        assert_eq!(s, vec!["Done: Write a poem.", "It's saved as rain.txt in the job folder. Ok."]);
+        assert_eq!(sentences("Hi."), vec!["Hi."]);
     }
 
     #[test]

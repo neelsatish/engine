@@ -157,6 +157,7 @@ pub fn ask_local(system: &str, prompt: &str, schema: Option<&str>) -> Result<Val
         "model": model,
         "stream": false,
         "think": false,
+        "keep_alive": "30m", // stay loaded between commands: reloading 5 GB takes over a minute
         "options": {"temperature": 0.2},
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
     });

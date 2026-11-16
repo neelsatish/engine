@@ -141,22 +141,43 @@ impl Recording {
 }
 
 /// How long a pause must be before a phrase counts as finished.
-pub const PAUSE_SECONDS: f32 = 0.45;
+pub const PAUSE_SECONDS: f32 = 0.35;
 
 /// Which timed pieces of speech are finished, given how much audio there is so far. Every piece but the last is
 /// finished (Whisper splits at pauses); the last is finished once a pause follows it. Returns the finished texts
 /// and the time (seconds into this audio) they end at.
 pub fn finished(segments: &[(f32, f32, String)], audio_seconds: f32) -> (Vec<String>, f32) {
-    let mut done = Vec::new();
-    let mut until = 0.0;
+    let mut done: Vec<(String, f32)> = Vec::new();
     for (i, (_, end, text)) in segments.iter().enumerate() {
         let last = i + 1 == segments.len();
         if !last || *end <= audio_seconds - PAUSE_SECONDS {
-            done.push(text.clone());
-            until = *end;
+            done.push((text.clone(), *end));
         }
     }
-    (done, until)
+    // "Can you open… Opera": a phrase ending on a word that needs more ("open", "and") waits for the rest,
+    // unless the person has clearly stopped.
+    while let Some((text, end)) = done.last() {
+        if dangling(text) && *end > audio_seconds - HOLD_SECONDS {
+            done.pop();
+        } else {
+            break;
+        }
+    }
+    let until = done.last().map_or(0.0, |d| d.1);
+    (done.into_iter().map(|d| d.0).collect(), until)
+}
+
+/// Silence after which a phrase counts as finished even if it ends mid-thought.
+const HOLD_SECONDS: f32 = 1.6;
+
+/// Whether a phrase ends on a word that needs something after it.
+pub fn dangling(text: &str) -> bool {
+    const NEEDS_MORE: [&str; 16] =
+        ["open", "launch", "start", "play", "search", "find", "and", "the", "to", "a", "my", "for", "on", "of", "can", "please"];
+    let last = text.split_whitespace().last().unwrap_or_default();
+    let ends_sentence = last.ends_with(['.', '!']) && !last.ends_with("..");
+    let word = last.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
+    NEEDS_MORE.contains(&word.as_str()) && !(ends_sentence && word != "open")
 }
 
 pub fn write_wav(path: &Path, samples: &[f32], rate: u32) -> Result<(), String> {
@@ -421,6 +442,12 @@ mod tests {
         let (done, until) = finished(&segs, 3.8);
         assert_eq!((done.len(), until), (2, 2.9));
         assert_eq!(finished(&[], 2.0), (vec![], 0.0));
+
+        // "Can you open… Opera": the dangling phrase waits for the rest, then goes once the person stops.
+        let split = vec![(0.0, 1.0, "Hello, can you open?".to_string()), (1.5, 2.0, "Opera.".to_string())];
+        assert_eq!(finished(&split[..1], 1.8), (vec![], 0.0));
+        assert_eq!(finished(&split, 2.7).0, vec!["Hello, can you open?".to_string(), "Opera.".to_string()]);
+        assert_eq!(finished(&split[..1], 3.0).0.len(), 1); // long silence: give up waiting
     }
 
     #[test]

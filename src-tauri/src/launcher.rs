@@ -39,7 +39,19 @@ pub fn parse_open(input: &str) -> Option<String> {
     if let Some(rest) = strip_word(s, "please") {
         s = rest;
     }
-    let rest = VERBS.iter().find_map(|v| strip_word(s, v))?;
+    // "open X" at the start, or after a lead-in ("I'll open X", "hello, can you open? Opera").
+    let rest = VERBS.iter().find_map(|v| strip_word(s, v)).or_else(|| {
+        VERBS
+            .iter()
+            .filter_map(|v| {
+                s.match_indices(v)
+                    .filter(|(i, _)| s[..*i].ends_with(|c: char| !c.is_alphanumeric()))
+                    .filter_map(|(i, _)| strip_word(&s[i..], v).map(|r| (i, r)))
+                    .last()
+            })
+            .max_by_key(|(i, _)| *i)
+            .map(|(_, r)| r)
+    })?;
     let rest = strip_word(rest, "my").or_else(|| strip_word(rest, "the")).unwrap_or(rest);
     let name = rest.trim_end_matches(|c: char| !c.is_alphanumeric());
     let name = name.strip_suffix(" please").unwrap_or(name).trim();
@@ -66,6 +78,13 @@ fn score(query: &str, name: &str) -> u8 {
 /// Lowercase letters and digits only, so "Chat GPT" (as speech often comes out) names the ChatGPT app.
 fn squash(s: &str) -> String {
     s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
+}
+
+/// The installed app (first) or shortcut whose name is exactly `query`, ignoring case, spaces and punctuation.
+pub fn exact(query: &str, aliases: &[Target], apps: &[Target]) -> Option<Target> {
+    let q = squash(query);
+    let same = |t: &&Target| squash(&t.name) == q;
+    apps.iter().find(same).or_else(|| aliases.iter().find(same)).cloned()
 }
 
 /// Finds what to open. An exact name wins, an installed app before an alias, so "open Claude" opens the Claude
@@ -201,6 +220,9 @@ mod tests {
         assert_eq!(parse_open("open").as_deref(), None);
         assert_eq!(parse_open("plan my day").as_deref(), None);
         assert_eq!(parse_open("engineering notes").as_deref(), None);
+        assert_eq!(parse_open("I'll open ChatGPT.").as_deref(), Some("chatgpt"));
+        assert_eq!(parse_open("Hello, can you open? Opera.").as_deref(), Some("opera"));
+        assert_eq!(parse_open("reopen the case").as_deref(), None);
     }
 
     #[test]

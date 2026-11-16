@@ -189,6 +189,10 @@ fn handle_dump(app: &AppHandle, text: &str) -> Reply {
             Match::Nothing => {}
         }
     }
+    // An app's name on its own ("Claude", "Spotify") opens it.
+    if let Some(t) = named_app(&engine, text, &aliases) {
+        return open_reply(app, Some(dump), t);
+    }
 
     let shortcuts: Vec<String> = aliases.iter().map(|a| a.name.clone()).collect();
     let projects: Vec<String> = engine.settings().projects.into_iter().map(|p| p.name).collect();
@@ -725,7 +729,7 @@ fn listen_loop(app: &AppHandle, live: bool) {
         };
         let _ = app.emit("voice-level", level);
         // A pass takes ~0.1-0.7 s on a GPU depending on the model; checking this often is what makes it feel instant.
-        if !live || last_pass.elapsed() < std::time::Duration::from_millis(350) {
+        if !live || last_pass.elapsed() < std::time::Duration::from_millis(200) {
             continue;
         }
         last_pass = std::time::Instant::now();
@@ -738,7 +742,13 @@ fn listen_loop(app: &AppHandle, live: bool) {
             continue;
         }
         let Ok(segments) = engine.with_helper(|h| h.segments(&wav, &model)) else { continue };
-        let (phrases, until) = voice::finished(&segments, audio.len() as f32 / rate as f32);
+        let (mut phrases, mut until) = voice::finished(&segments, audio.len() as f32 / rate as f32);
+        // A complete instant command ("open Claude", "pause") runs the moment it's heard, without waiting for
+        // the pause after it.
+        if let Some(last) = segments.last().filter(|s| s.1 > until && instant_command(&engine, &s.2)) {
+            phrases = segments.iter().filter(|s| s.1 > until).map(|s| s.2.clone()).collect();
+            until = last.1;
+        }
         if phrases.is_empty() {
             continue;
         }
@@ -765,11 +775,39 @@ fn act_on(app: &AppHandle, text: &str) {
     });
 }
 
-/// Drops filler an open mic catches between commands ("Oh.", "Thank you.", stray numbers): a phrase of one or two
-/// words counts only when it's an instant command or "open X".
+/// Drops what an open mic catches that isn't meant for Engine: no words at all, filler, and the phrases Whisper
+/// invents from silence ("Thank you."). Everything else counts, so "hello" gets a reply like any chat.
 fn worth_acting(text: &str) -> bool {
-    let words = text.split_whitespace().filter(|w| w.chars().any(char::is_alphabetic)).count();
-    words > 2 || (words > 0 && (quick::parse(text).is_some() || quick::stop_all(text) || launcher::parse_open(text).is_some()))
+    const FILLER: [&str; 16] = [
+        "thank you", "thanks for watching", "thank you for watching", "you", "bye", "oh", "uh", "um", "hmm", "ah",
+        "okay", "ok", "yeah", "so", "and", "open",
+    ];
+    let words: Vec<String> = text
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'').to_lowercase())
+        .filter(|w| w.chars().any(char::is_alphabetic))
+        .collect();
+    !words.is_empty() && !FILLER.contains(&words.join(" ").as_str())
+}
+
+/// Whether a phrase is something Engine does instantly with no model: a quick command, "stop everything", or
+/// opening one exact app or shortcut. Those run the moment they're heard.
+fn instant_command(engine: &Engine, text: &str) -> bool {
+    if quick::parse(text).is_some() || quick::stop_all(text) {
+        return true;
+    }
+    let aliases = engine.aliases().unwrap_or_default();
+    launcher::parse_open(text).is_some_and(|q| matches!(engine.find(&q, &aliases), Match::One(_)))
+        || named_app(engine, text, &aliases).is_some()
+}
+
+/// An installed app or shortcut named on its own ("Claude", "Spotify"), so saying a name opens it.
+fn named_app(engine: &Engine, text: &str, aliases: &[Target]) -> Option<Target> {
+    let name = text.trim().trim_matches(|c: char| !c.is_alphanumeric());
+    if name.is_empty() || name.split_whitespace().count() > 3 {
+        return None;
+    }
+    launcher::exact(name, aliases, &engine.apps(false))
 }
 
 /// Brings Engine up so its logo visibly listens, even from the tray. No focus steal and no "summon" (which could
@@ -802,6 +840,7 @@ fn wake_loop(app: &AppHandle) {
     let mut gate = wake::Gate::default();
     let mut follow: Option<Instant> = None; // after "Yes sir?": until when the next words count without "Engine"
     let mut warmed = false;
+    let mut said = String::new(); // what's been said since "Yes sir?"
     loop {
         std::thread::sleep(Duration::from_millis(STEP_MS as u64));
         if !wake::ENABLED.load(std::sync::atomic::Ordering::Relaxed) {
@@ -835,8 +874,12 @@ fn wake_loop(app: &AppHandle) {
         }
         let following = follow.is_some_and(|t| Instant::now() < t || gate.in_speech());
         if follow.is_some() && !following {
-            follow = None; // nothing more was said
+            follow = None; // nothing more was said: act on whatever came, if anything
             voice_event(app, "idle", "");
+            if worth_acting(&said) {
+                act_on(app, &std::mem::take(&mut said));
+            }
+            said.clear();
         }
         let level = rec.level();
         if following {
@@ -859,19 +902,29 @@ fn wake_loop(app: &AppHandle) {
         let _ = fs::remove_file(&wav); // the words are used, the recording isn't kept
         let heard = heard.unwrap_or_default();
         if following {
+            // After "Yes sir?", pieces split by a pause ("open…" "Opera") are joined until the request is whole.
+            let piece = wake::command(&heard).unwrap_or(heard); // "Engine" said again is fine too
+            said = format!("{said} {piece}").trim().to_string();
+            if voice::dangling(&said) || !worth_acting(&said) {
+                follow = Some(Instant::now() + Duration::from_secs(4));
+                voice_event(app, "listening", "");
+                continue;
+            }
             follow = None;
             voice_event(app, "idle", "");
-            act_on(app, &wake::command(&heard).unwrap_or(heard)); // "Engine" said again is fine too
+            act_on(app, &std::mem::take(&mut said));
             continue;
         }
+        said.clear();
         let Some(rest) = wake::command(&heard) else { continue }; // talk not meant for Engine: forgotten
         ptt::log(&format!("wake: heard {heard:?}"));
         stop_speech(&engine); // talking to Engine cuts off whatever it was saying
         reveal(app);
-        if worth_acting(&rest) {
+        if worth_acting(&rest) && !voice::dangling(&rest) {
             act_on(app, &rest);
             continue;
         }
+        said = rest; // "Engine, can you open…": the rest comes after "Yes sir?"
         let clip = said_clip(&engine, "Yes sir?");
         if clip.is_file() {
             voice::play(&clip);
@@ -880,7 +933,7 @@ fn wake_loop(app: &AppHandle) {
         }
         rec.clear(); // don't hear our own reply
         gate.reset();
-        follow = Some(Instant::now() + Duration::from_secs(6));
+        follow = Some(Instant::now() + Duration::from_secs(8));
         voice_event(app, "listening", "");
     }
 }
@@ -964,24 +1017,46 @@ fn speak(app: &AppHandle, text: &str) -> Result<(), String> {
     let engine = app.state::<Engine>();
     stop_speech(&engine);
     let v = engine.settings().voice;
-    let out = engine.work_dir.join("voice").join("spoken.wav");
-    match v.engine.as_str() {
-        // Kokoro only writes the audio; it's played here, so the helper is free and talking over it cuts it off.
-        "kokoro" => {
-            let request = serde_json::json!({"cmd": "say", "text": text, "out": out});
-            engine.with_helper(|h| h.call(&request))?;
-            voice::play(&out);
-        }
-        "chatterbox" => {
-            let request = serde_json::json!({"cmd": "speak", "text": text, "clip": v.clip, "out": out, "engine": "chatterbox"});
-            engine.with_helper(|h| h.call(&request))?;
-        }
-        _ => *engine.speaking.lock().unwrap() = Some(voice::speak_windows(text)?),
+    if !matches!(v.engine.as_str(), "kokoro" | "chatterbox") {
+        *engine.speaking.lock().unwrap() = Some(voice::speak_windows(text)?);
+        return Ok(());
     }
+    // Kokoro or Chatterbox: each sentence is made while the one before plays, so speech starts after the first
+    // sentence instead of the whole reply. Playback is here, not in the helper, so talking over it cuts it off.
+    use std::sync::atomic::Ordering;
+    let turn = SPEECH.fetch_add(1, Ordering::SeqCst) + 1; // a newer reply or a hush ends this one
+    let (queue, played) = std::sync::mpsc::channel::<PathBuf>();
+    let player = std::thread::spawn(move || {
+        for wav in played {
+            if SPEECH.load(Ordering::SeqCst) == turn {
+                voice::play(&wav);
+            }
+            let _ = fs::remove_file(&wav);
+        }
+    });
+    for (n, sentence) in narrate::sentences(text).iter().enumerate() {
+        if SPEECH.load(Ordering::SeqCst) != turn {
+            break;
+        }
+        let out = engine.work_dir.join("voice").join(format!("spoken-{turn}-{n}.wav"));
+        let request = serde_json::json!({"cmd": "say", "text": sentence, "out": out, "engine": v.engine, "clip": v.clip});
+        if let Err(e) = engine.with_helper(|h| h.call(&request)) {
+            drop(queue);
+            let _ = player.join();
+            return Err(e);
+        }
+        let _ = queue.send(out);
+    }
+    drop(queue);
+    let _ = player.join();
     Ok(())
 }
 
+/// Counts replies spoken, so stopping or starting a new one ends the one before mid-sentence.
+static SPEECH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 fn stop_speech(engine: &Engine) {
+    SPEECH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     voice::hush();
     if let Some(mut child) = engine.speaking.lock().unwrap().take() {
         let _ = child.kill();
@@ -1040,18 +1115,25 @@ fn narrator(app: AppHandle, lines: std::sync::mpsc::Receiver<narrate::Line>) {
     }
 }
 
-/// Where a short phrase's cached recording lives ("Yes sir?" is voice/said/yes-sir.wav).
-fn said_clip(engine: &Engine, text: &str) -> PathBuf {
-    let name: String = text.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect::<Vec<_>>().join("-");
-    engine.work_dir.join("voice").join("said").join(format!("{name}.wav"))
+/// The voice short phrases are recorded in: Chatterbox when it's Engine's voice, otherwise Kokoro's British George.
+fn phrase_voice(engine: &Engine) -> (String, String) {
+    let v = engine.settings().voice;
+    if v.engine == "chatterbox" { ("chatterbox".into(), v.clip) } else { ("kokoro".into(), String::new()) }
 }
 
-/// A short phrase in the British voice, made once with Kokoro and kept so it plays at once. None without Kokoro.
+/// Where a short phrase's cached recording lives ("Yes sir?" in Chatterbox is voice/said/chatterbox/yes-sir.wav).
+fn said_clip(engine: &Engine, text: &str) -> PathBuf {
+    let name: String = text.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect::<Vec<_>>().join("-");
+    engine.work_dir.join("voice").join("said").join(phrase_voice(engine).0).join(format!("{name}.wav"))
+}
+
+/// A short phrase in Engine's voice, made once and kept so it plays at once. None when it can't be made.
 fn cached_clip(engine: &Engine, text: &str) -> Option<PathBuf> {
     let clip = said_clip(engine, text);
     if !clip.is_file() {
         let _ = fs::create_dir_all(clip.parent()?);
-        let request = serde_json::json!({"cmd": "say", "text": text, "out": clip});
+        let (voice, reference) = phrase_voice(engine);
+        let request = serde_json::json!({"cmd": "say", "text": text, "out": clip, "engine": voice, "clip": reference});
         if let Err(e) = engine.with_helper(|h| h.call(&request)) {
             ptt::log(&format!("voice: couldn't make {text:?}: {e}"));
         }
@@ -1294,9 +1376,17 @@ pub fn run() {
             let _ = NARRATOR.set(lines);
             let speaker = app.handle().clone();
             std::thread::spawn(move || {
-                // Record the short phrases first (once, about a second each), so none waits on Kokoro later.
+                // Load Chatterbox now when it's Engine's voice (its first reply would otherwise take ~35 s), then
+                // record the short phrases once, so none waits later.
                 let engine = speaker.state::<Engine>();
-                if engine.settings().voice.wake || engine.settings().voice.narrate {
+                let v = engine.settings().voice;
+                if v.engine == "chatterbox" {
+                    let warm = serde_json::json!({"cmd": "warm_tts", "clip": v.clip});
+                    if let Err(e) = engine.with_helper(|h| h.call(&warm)) {
+                        ptt::log(&format!("voice: couldn't load Chatterbox: {e}"));
+                    }
+                }
+                if v.wake || v.narrate {
                     for phrase in narrate::PHRASES {
                         cached_clip(&engine, phrase);
                     }
@@ -1432,10 +1522,10 @@ pub fn run() {
 mod tests {
     #[test]
     fn filler_is_not_acted_on() {
-        for filler in ["Oh.", "Thank you.", "talks.", "1 . 2 3 7 7 8", ""] {
+        for filler in ["Oh.", "Thank you.", "Open.", "1 . 2 3 7 7 8", ""] {
             assert!(!super::worth_acting(filler), "{filler:?} should be ignored");
         }
-        for meant in ["Open Opera", "pause", "next song", "open google docs", "what's on my calendar today"] {
+        for meant in ["Open Opera", "pause", "Hello.", "Claude.", "open google docs", "what's on my calendar today"] {
             assert!(super::worth_acting(meant), "{meant:?} should be acted on");
         }
     }

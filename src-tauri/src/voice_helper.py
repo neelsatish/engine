@@ -114,10 +114,45 @@ def kokoro():
     return british
 
 
-def say(text, out):
-    """Writes `text` in a British voice (Kokoro's George) to `out`."""
+def say(text, out, engine="kokoro", clip=""):
+    """Writes `text` to `out` without playing it: Kokoro's British George, or Chatterbox."""
+    if engine == "chatterbox":
+        model = chatterbox(clip)
+        # cfg_weight below the 0.5 default speeds delivery up a little; exaggeration just above neutral keeps it
+        # lively without overacting.
+        wav = model.generate(text, exaggeration=0.55, cfg_weight=0.35)
+        save_wav(out, wav.squeeze().detach().cpu().numpy(), model.sr)
+        return
     samples, rate = kokoro().create(text, voice="bm_george", speed=1.05, lang="en-gb")
     save_wav(out, samples, rate)
+
+
+voice_for = None  # the reference clip Chatterbox's voice is currently prepared from
+
+REFERENCE_TEXT = (
+    "Good evening. Everything is running smoothly, and your schedule for tomorrow is clear. "
+    "I've opened the files you asked for, and the report is ready whenever you'd like to review it."
+)
+
+
+def chatterbox(clip=""):
+    """Chatterbox, loaded once and kept warm. Without a clip of the user's own, it speaks in a British voice
+    cloned from Kokoro's George (a synthetic voice, free to use), recorded once next to this script."""
+    global tts, voice_for
+    import torch
+    from chatterbox.tts import ChatterboxTTS
+
+    if tts is None:
+        tts = ChatterboxTTS.from_pretrained(device="cuda" if torch.cuda.is_available() else "cpu")
+    if not clip:
+        clip = os.path.join(os.path.dirname(os.path.abspath(__file__)), "british-reference.wav")
+        if not os.path.exists(clip):
+            samples, rate = kokoro().create(REFERENCE_TEXT, voice="bm_george", speed=1.0, lang="en-gb")
+            save_wav(clip, samples, rate)
+    if voice_for != clip:
+        tts.prepare_conditionals(clip, exaggeration=0.55)  # once per voice, not on every line
+        voice_for = clip
+    return tts
 
 
 def speak(text, clip, out, engine="chatterbox"):
@@ -146,8 +181,11 @@ def handle(req):
     if cmd == "speak":
         speak(req["text"], req.get("clip", ""), req["out"], req.get("engine", "chatterbox"))
         return {"ok": True}
-    if cmd == "say":  # write speech to a file without playing it (Engine caches short replies like "Yes sir?")
-        say(req["text"], req["out"])
+    if cmd == "say":  # write speech to a file without playing it; Engine plays it, so talking can cut it off
+        say(req["text"], req["out"], req.get("engine", "kokoro"), req.get("clip", ""))
+        return {"ok": True}
+    if cmd == "warm_tts":  # load Chatterbox and its voice now, so the first reply doesn't wait ~35 s
+        chatterbox(req.get("clip", "")).generate("Ready.", exaggeration=0.55, cfg_weight=0.35)
         return {"ok": True}
     if cmd == "warm":
         whisper(req.get("model") or "large-v3-turbo")
@@ -159,9 +197,12 @@ def handle(req):
 
 
 gpu_libraries()
+replies = sys.stdout
+sys.stdout = sys.stderr  # libraries print notes ("loaded PerthNet…"); only replies may reach Engine's pipe
 for line in sys.stdin:
     try:
-        reply = handle(json.loads(line))
+        reply = handle(json.loads(line.lstrip("﻿")))
     except Exception as e:  # report and keep serving
         reply = {"error": f"{type(e).__name__}: {e}"}
-    print(json.dumps(reply), flush=True)
+    replies.write(json.dumps(reply) + "\n")
+    replies.flush()
