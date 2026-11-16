@@ -5,6 +5,18 @@ A personal assistant for Windows that ties your AI tools together. Built with Ta
 Design: [docs/superpowers/specs/2026-11-16-engine-design.md](docs/superpowers/specs/2026-11-16-engine-design.md).
 UI tokens: [design-system/engine/MASTER.md](design-system/engine/MASTER.md).
 
+## Layout
+
+- **Stage, across the top:** the Engine logo drawn in ASCII. It ripples in the Velvet Fold gradient with your voice
+  while you talk, then hands over to a thinking orb with what Engine is doing ("Sorting it out", "2 agents working").
+  Briefing, Schedule and Settings open here too.
+- **Tab rail, bottom left:** Home, Briefing (with a count of what needs you), Schedule, Settings, plus Review my day
+  and Read aloud.
+- **Chat, bottom middle:** what Engine just did and heard, and the composer, with its folder, model, Local AI, mic
+  and send controls.
+- **System, bottom right:** CPU, RAM, GPU load, VRAM and GPU temperature, refreshed every two seconds while Engine is
+  visible. CPU temperature needs admin rights on Windows, so it isn't shown.
+
 ## What works now
 
 - Open apps, sites and folders: "open Opera", "hey Engine, open my Gmail", "launch Spotify".
@@ -81,6 +93,10 @@ Obsidian. Engine never overwrites a note there: a second plan with the same name
 it (it snaps to 15 minutes), click it to edit or delete it, or use **Add block**.
 
 ### Voice
+
+**Engine acts while you talk.** Each phrase runs as soon as you pause, so "open Spotify" opens Spotify while you
+keep going, and bigger requests start in parallel. Letting go of the key handles the last phrase, so there's no
+send. Turn this off in Settings → Voice to get the words in the dump box instead.
 
 Hold the key under Esc (`` ` ``) anywhere and speak; a quick tap still types the character, and with Shift, Ctrl,
 Alt or Win held it passes straight through. `Ctrl+Alt+Space` and the mic button in the dump box work too. Engine records your default microphone,

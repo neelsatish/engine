@@ -15,7 +15,7 @@ use std::{
 };
 
 /// How long the helper (and its loaded models) stays alive with no voice use.
-pub const IDLE: Duration = Duration::from_secs(5 * 60);
+pub const IDLE: Duration = Duration::from_secs(15 * 60);
 /// Longest recording kept, so a stuck key can't fill memory.
 const MAX_SECONDS: usize = 120;
 
@@ -35,12 +35,15 @@ fn no_window(cmd: &mut Command) -> &mut Command {
 pub struct Recording {
     stop: mpsc::Sender<()>,
     done: JoinHandle<Result<(Vec<f32>, u32), String>>,
+    /// What has been heard so far, readable while recording (for acting on phrases as they're finished).
+    samples: Arc<Mutex<Vec<f32>>>,
+    pub rate: u32,
 }
 
 /// Starts recording the default microphone, mixed down to mono.
 pub fn record() -> Result<Recording, String> {
     let (stop, stopped) = mpsc::channel::<()>();
-    let (ready_tx, ready) = mpsc::channel::<()>();
+    let (ready_tx, ready) = mpsc::channel::<(u32, Arc<Mutex<Vec<f32>>>)>();
     let done = std::thread::spawn(move || {
         let device = cpal::default_host().default_input_device().ok_or("No microphone found.")?;
         let supported = device.default_input_config().map_err(|e| format!("Couldn't use the microphone: {e}"))?;
@@ -85,19 +88,36 @@ pub fn record() -> Result<Recording, String> {
         }
         .map_err(|e| format!("Couldn't open the microphone: {e}"))?;
         stream.play().map_err(|e| format!("Couldn't start the microphone: {e}"))?;
-        let _ = ready_tx.send(());
+        let _ = ready_tx.send((rate, samples.clone()));
         let _ = stopped.recv();
         drop(stream);
         let taken = std::mem::take(&mut *samples.lock().unwrap());
         Ok((taken, rate))
     });
     match ready.recv() {
-        Ok(()) => Ok(Recording { stop, done }),
+        Ok((rate, samples)) => Ok(Recording { stop, done, samples, rate }),
         Err(_) => Err(done.join().ok().and_then(|r| r.err()).unwrap_or_else(|| "The microphone stopped.".into())),
     }
 }
 
 impl Recording {
+    /// The audio heard from sample `from` onwards, while still recording.
+    pub fn since(&self, from: usize) -> Vec<f32> {
+        let s = self.samples.lock().unwrap();
+        s.get(from..).map(<[f32]>::to_vec).unwrap_or_default()
+    }
+
+    /// How loud the last tenth of a second was, 0 to 1, for the listening animation.
+    pub fn level(&self) -> f32 {
+        let s = self.samples.lock().unwrap();
+        let tail = &s[s.len().saturating_sub(self.rate as usize / 10)..];
+        if tail.is_empty() {
+            return 0.0;
+        }
+        let rms = (tail.iter().map(|x| x * x).sum::<f32>() / tail.len() as f32).sqrt();
+        (rms * 6.0).min(1.0)
+    }
+
     /// Stops and writes the audio as a 16-bit mono WAV. None if it was too short to hold any speech.
     pub fn finish(self, wav: &Path) -> Result<Option<PathBuf>, String> {
         let _ = self.stop.send(());
@@ -108,6 +128,25 @@ impl Recording {
         write_wav(wav, &samples, rate)?;
         Ok(Some(wav.to_path_buf()))
     }
+}
+
+/// How long a pause must be before a phrase counts as finished.
+pub const PAUSE_SECONDS: f32 = 0.7;
+
+/// Which timed pieces of speech are finished, given how much audio there is so far. Every piece but the last is
+/// finished (Whisper splits at pauses); the last is finished once a pause follows it. Returns the finished texts
+/// and the time (seconds into this audio) they end at.
+pub fn finished(segments: &[(f32, f32, String)], audio_seconds: f32) -> (Vec<String>, f32) {
+    let mut done = Vec::new();
+    let mut until = 0.0;
+    for (i, (_, end, text)) in segments.iter().enumerate() {
+        let last = i + 1 == segments.len();
+        if !last || *end <= audio_seconds - PAUSE_SECONDS {
+            done.push(text.clone());
+            until = *end;
+        }
+    }
+    (done, until)
 }
 
 pub fn write_wav(path: &Path, samples: &[f32], rate: u32) -> Result<(), String> {
@@ -165,6 +204,22 @@ impl Helper {
         }
     }
 
+    /// Timed pieces of speech in `wav`: (start seconds, end seconds, text).
+    pub fn segments(&mut self, wav: &Path, model: &str) -> Result<Vec<(f32, f32, String)>, String> {
+        let reply = self.call(&json!({"cmd": "segments", "path": wav, "model": model}))?;
+        Ok(reply["segments"]
+            .as_array()
+            .map(|list| {
+                list.iter()
+                    .map(|s| {
+                        let t = |k: &str| s[k].as_f64().unwrap_or_default() as f32;
+                        (t("start"), t("end"), s["text"].as_str().unwrap_or_default().to_string())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
     pub fn transcribe(&mut self, wav: &Path, model: &str) -> Result<String, String> {
         let reply = self.call(&json!({"cmd": "transcribe", "path": wav, "model": model}))?;
         Ok(reply["text"].as_str().unwrap_or_default().trim().to_string())
@@ -217,7 +272,8 @@ pub fn install(voice_env: &Path, mut progress: impl FnMut(String)) -> Result<(),
     let env = voice_env.to_string_lossy().into_owned();
     run(&["venv", "--python", "3.11", &env])?;
     let py = voice_env.join("Scripts").join("python.exe").to_string_lossy().into_owned();
-    run(&["pip", "install", "--python", &py, "chatterbox-tts", "faster-whisper"])
+    // setuptools under 81 keeps pkg_resources, which Chatterbox's watermarker still imports.
+    run(&["pip", "install", "--python", &py, "chatterbox-tts", "faster-whisper", "setuptools<81"])
 }
 
 // ---------- speech out ----------
@@ -311,6 +367,17 @@ mod tests {
              1 thing needs you: Send reply to Sam. Done: Plan A, Plan B, and 2 more."
         );
         assert_eq!(briefing_text(&[], &[]), "Here's your briefing. Nothing on yet today.");
+    }
+
+    #[test]
+    fn acts_on_finished_phrases_only() {
+        let segs = vec![(0.0, 1.2, "open spotify".to_string()), (1.6, 2.9, "and pause".to_string())];
+        // The last phrase ended just now: it may still be going.
+        assert_eq!(finished(&segs, 3.0), (vec!["open spotify".to_string()], 1.2));
+        // A pause after it: both are done.
+        let (done, until) = finished(&segs, 3.8);
+        assert_eq!((done.len(), until), (2, 2.9));
+        assert_eq!(finished(&[], 2.0), (vec![], 0.0));
     }
 
     #[test]

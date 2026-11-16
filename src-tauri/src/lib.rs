@@ -7,6 +7,7 @@ pub mod router;
 pub mod schedule;
 pub mod settings;
 pub mod store;
+pub mod sysload;
 pub mod voice;
 
 use launcher::{Match, Target};
@@ -41,6 +42,17 @@ struct Engine {
     helper: Mutex<Option<voice::Helper>>,
     /// Windows speech in progress, so a new briefing (or Stop) can end it.
     speaking: Mutex<Option<std::process::Child>>,
+    /// Acting while the person talks: how many samples have already been acted on, and the loop doing it.
+    live: Mutex<Live>,
+    load: sysload::Monitor,
+}
+
+#[derive(Default)]
+struct Live {
+    /// Samples of the current recording already transcribed and acted on.
+    done: usize,
+    on: bool,
+    task: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Engine {
@@ -628,22 +640,101 @@ fn voice_event(app: &AppHandle, state: &str, message: &str) {
 fn start_listening(app: &AppHandle) -> Result<(), String> {
     let engine = app.state::<Engine>();
     let mut rec = engine.recording.lock().unwrap();
-    if rec.is_none() {
-        *rec = Some(voice::record()?);
-        voice_event(app, "listening", "");
+    if rec.is_some() {
+        return Ok(());
     }
+    *rec = Some(voice::record()?);
+    drop(rec);
+    voice_event(app, "listening", "");
+    warm_voice(app);
+    let live = engine.settings().voice.live;
+    let mut state = engine.live.lock().unwrap();
+    *state = Live { done: 0, on: true, task: None };
+    let app = app.clone();
+    state.task = Some(std::thread::spawn(move || listen_loop(&app, live)));
     Ok(())
 }
 
-/// Stops the microphone and transcribes what was said. Empty when nothing was caught.
+/// While the mic is open: send the voice level to the UI often, and (when acting live) transcribe about once a
+/// second and act on every phrase that's finished, so "open Spotify" happens while the person keeps talking.
+fn listen_loop(app: &AppHandle, live: bool) {
+    let engine = app.state::<Engine>();
+    let model = engine.settings().voice.model;
+    let wav = engine.work_dir.join("voice").join("live.wav");
+    let mut last_pass = std::time::Instant::now();
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(70));
+        if !engine.live.lock().unwrap().on {
+            break;
+        }
+        let (level, rate) = match engine.recording.lock().unwrap().as_ref() {
+            Some(r) => (r.level(), r.rate),
+            None => break,
+        };
+        let _ = app.emit("voice-level", level);
+        if !live || last_pass.elapsed() < std::time::Duration::from_millis(900) {
+            continue;
+        }
+        last_pass = std::time::Instant::now();
+        let from = engine.live.lock().unwrap().done;
+        let Some(audio) = engine.recording.lock().unwrap().as_ref().map(|r| r.since(from)) else { break };
+        if audio.len() < rate as usize {
+            continue; // under a second of new sound: nothing to act on yet
+        }
+        if voice::write_wav(&wav, &audio, rate).is_err() {
+            continue;
+        }
+        let Ok(segments) = engine.with_helper(|h| h.segments(&wav, &model)) else { continue };
+        let (phrases, until) = voice::finished(&segments, audio.len() as f32 / rate as f32);
+        if phrases.is_empty() {
+            continue;
+        }
+        engine.live.lock().unwrap().done = from + (until * rate as f32) as usize;
+        act_on(app, &phrases.join(" "));
+    }
+    let _ = fs::remove_file(&wav);
+}
+
+/// Shows what was heard and acts on it straight away, like a dump sent from the box.
+fn act_on(app: &AppHandle, text: &str) {
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return;
+    }
+    let _ = app.emit("heard-part", &text);
+    let app = app.clone();
+    std::thread::spawn(move || {
+        if let Reply::Error { message } = handle_dump(&app, &text) {
+            voice_event(&app, "error", &message);
+        }
+    });
+}
+
+/// Stops the microphone and transcribes what was said. Empty when nothing was caught. When acting live, only the
+/// part not yet acted on is transcribed.
 fn stop_listening(app: &AppHandle) -> Result<String, String> {
     let engine = app.state::<Engine>();
+    // Stop the live loop first and let any pass in progress finish, so nothing is acted on twice.
+    let task = {
+        let mut live = engine.live.lock().unwrap();
+        live.on = false;
+        live.task.take()
+    };
+    if let Some(task) = task {
+        let _ = task.join();
+    }
+    let done = engine.live.lock().unwrap().done;
     let Some(rec) = engine.recording.lock().unwrap().take() else { return Ok(String::new()) };
+    let rest = rec.since(done);
+    let rate = rec.rate;
     let wav = engine.work_dir.join("voice").join("heard.wav");
-    let Some(wav) = rec.finish(&wav)? else {
+    let _ = rec.finish(&engine.work_dir.join("voice").join("all.wav"));
+    let _ = fs::remove_file(engine.work_dir.join("voice").join("all.wav"));
+    if rest.len() < rate as usize * 3 / 10 {
         voice_event(app, "idle", "");
         return Ok(String::new());
-    };
+    }
+    voice::write_wav(&wav, &rest, rate)?;
     voice_event(app, "transcribing", "");
     let model = engine.settings().voice.model;
     let text = engine.with_helper(|h| h.transcribe(&wav, &model));
@@ -652,13 +743,17 @@ fn stop_listening(app: &AppHandle) -> Result<String, String> {
     text
 }
 
-/// Push-to-talk released: transcribe, then hand the words to the UI (which may send them straight away).
+/// Push-to-talk released: transcribe what's left. Acting live, it runs straight away like the rest; otherwise the
+/// words go to the dump box (sent at once if auto-submit is on).
 fn heard(app: &AppHandle) {
+    let voice = app.state::<Engine>().settings().voice;
     match stop_listening(app) {
+        Ok(text) if !text.is_empty() && voice.live => act_on(app, &text),
         Ok(text) if !text.is_empty() => {
             show(app);
-            let _ = app.emit("heard", serde_json::json!({"text": text, "submit": app.state::<Engine>().settings().voice.auto_submit}));
+            let _ = app.emit("heard", serde_json::json!({"text": text, "submit": voice.auto_submit}));
         }
+        Ok(_) if voice.live => {}
         Ok(_) => voice_event(app, "error", "Didn't catch that. Hold the key while you speak."),
         Err(e) => voice_event(app, "error", &e),
     }
@@ -798,6 +893,12 @@ fn manage_connectors() -> Result<(), String> {
     launcher::launch("https://claude.ai/settings/connectors").map_err(|e| e.to_string())
 }
 
+/// CPU, RAM and GPU load for the corner readout.
+#[tauri::command]
+fn system_load(engine: State<Engine>) -> sysload::Load {
+    engine.load.read()
+}
+
 #[tauri::command]
 fn get_settings(engine: State<Engine>) -> Result<settings::Settings, String> {
     settings::Settings::load(&engine.settings_path)
@@ -824,6 +925,17 @@ fn show(app: &AppHandle) {
         let _ = w.set_focus();
         let _ = w.emit("summon", ());
     }
+    warm_voice(app);
+}
+
+/// Loads Whisper in the background, so the first thing said after summoning Engine is caught at full speed.
+fn warm_voice(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let engine = app.state::<Engine>();
+        let model = engine.settings().voice.model;
+        let _ = engine.with_helper(|h| h.call(&serde_json::json!({"cmd": "warm", "model": model})));
+    });
 }
 
 fn toggle(app: &AppHandle) {
@@ -888,6 +1000,8 @@ pub fn run() {
                 recording: Mutex::default(),
                 helper: Mutex::default(),
                 speaking: Mutex::default(),
+                live: Mutex::default(),
+                load: sysload::Monitor::new(),
             });
 
             // Local AI left on last time: make sure Ollama is running (the model loads on first use).
@@ -1010,6 +1124,7 @@ pub fn run() {
             save_block,
             delete_block,
             connections,
+            system_load,
             local_status,
             set_local_ai,
             manage_connectors,

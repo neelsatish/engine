@@ -8,7 +8,7 @@
   import { onMount } from "svelte";
 
   type Project = { name: string; folder: string; runner: string };
-  type Voice = { model: string; auto_submit: boolean; speak_on_summon: boolean; engine: string; clip: string; hold_key: boolean };
+  type Voice = { model: string; auto_submit: boolean; speak_on_summon: boolean; engine: string; clip: string; hold_key: boolean; live: boolean };
   type Settings = {
     projects: Project[];
     knowledge: string[];
@@ -66,7 +66,7 @@
   let settings = $state<Settings>({
     projects: [],
     knowledge: [],
-    voice: { model: "large-v3-turbo", auto_submit: false, speak_on_summon: false, engine: "windows", clip: "", hold_key: true },
+    voice: { model: "large-v3-turbo", auto_submit: false, speak_on_summon: false, engine: "windows", clip: "", hold_key: true, live: true },
     models: { agent: "haiku", answer: "sonnet" },
     folder: "",
     recent: [],
@@ -253,6 +253,10 @@
       <div class="row">
         <div class="label-col"><span class="name">Hold <kbd>`</kbd> to talk</span><span class="desc">A quick tap still types it</span></div>
         {@render toggle(settings.voice.hold_key, "Hold the backtick key to talk", () => setVoice({ hold_key: !settings.voice.hold_key }))}
+      </div>
+      <div class="row">
+        <div class="label-col"><span class="name">Act while I talk</span><span class="desc">Each phrase runs as soon as you pause</span></div>
+        {@render toggle(settings.voice.live, "Act while I talk", () => setVoice({ live: !settings.voice.live }))}
       </div>
       <div class="row">
         <div class="label-col"><span class="name">Send what I say</span><span class="desc">Skip checking it first</span></div>

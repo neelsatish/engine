@@ -59,6 +59,8 @@ pub struct Voice {
     pub clip: String,
     /// Hold the key under Esc (`) to talk; a tap still types it.
     pub hold_key: bool,
+    /// Act on each finished phrase while the person is still talking, instead of waiting for them to stop.
+    pub live: bool,
 }
 
 impl Default for Voice {
@@ -70,6 +72,7 @@ impl Default for Voice {
             engine: "windows".into(),
             clip: String::new(),
             hold_key: true,
+            live: true,
         }
     }
 }

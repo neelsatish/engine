@@ -37,7 +37,21 @@ def whisper(name):
             whisper_models[name] = load("cuda", "float16")
         except Exception:
             whisper_models[name] = load("cpu", "int8")
+        try:  # the first pass on a GPU is slow while CUDA warms up: spend it now, on a second of silence
+            import numpy as np
+
+            list(whisper_models[name].transcribe(np.zeros(16000, dtype=np.float32), beam_size=1)[0])
+        except Exception:
+            pass
     return whisper_models[name]
+
+
+def segments(path, name):
+    """Timed pieces of speech, so Engine can act on each finished phrase while the person is still talking."""
+    # Split at half-second pauses (the default waits two seconds), so each phrase can run as soon as it's said.
+    vad = {"min_silence_duration_ms": 500, "speech_pad_ms": 200}
+    found, _ = whisper(name).transcribe(path, beam_size=1, vad_filter=True, vad_parameters=vad)
+    return [{"start": s.start, "end": s.end, "text": s.text.strip()} for s in found if s.text.strip()]
 
 
 def transcribe(path, name):
@@ -87,8 +101,13 @@ def handle(req):
     cmd = req.get("cmd")
     if cmd == "transcribe":
         return {"text": transcribe(req["path"], req.get("model") or "large-v3-turbo")}
+    if cmd == "segments":
+        return {"segments": segments(req["path"], req.get("model") or "large-v3-turbo")}
     if cmd == "speak":
         speak(req["text"], req.get("clip", ""), req["out"])
+        return {"ok": True}
+    if cmd == "warm":
+        whisper(req.get("model") or "large-v3-turbo")
         return {"ok": True}
     if cmd == "check":
         found = lambda m: importlib.util.find_spec(m) is not None
