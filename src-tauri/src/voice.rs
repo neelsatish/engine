@@ -311,20 +311,6 @@ pub fn install(voice_env: &Path, mut progress: impl FnMut(String)) -> Result<(),
 
 // ---------- speech out ----------
 
-/// Speaks with Windows' built-in voice. The returned child can be killed to stop it.
-pub fn speak_windows(text: &str) -> Result<Child, String> {
-    let script = "Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; \
-                  $s.Rate = 1; $s.Speak([Console]::In.ReadToEnd())";
-    let mut child = no_window(Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", script]))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("Couldn't start Windows speech: {e}"))?;
-    child.stdin.take().expect("stdin is piped").write_all(text.as_bytes()).map_err(|e| e.to_string())?;
-    Ok(child)
-}
-
 /// Whether Engine is playing speech right now (so the wake word listener doesn't hear Engine itself).
 pub static PLAYING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 

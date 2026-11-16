@@ -53,7 +53,7 @@ pub struct Voice {
     pub auto_submit: bool,
     /// Read the briefing aloud each time Engine is summoned.
     pub speak_on_summon: bool,
-    /// "windows" (built-in voice), "kokoro" (a British voice) or "chatterbox" (the user's cloned voice).
+    /// "kokoro" (a British voice, the default) or "chatterbox" (the user's cloned voice).
     pub engine: String,
     /// The reference clip Chatterbox clones, about 10 seconds of a voice the user owns or may use.
     pub clip: String,
@@ -73,7 +73,7 @@ impl Default for Voice {
             model: "small.en".into(),
             auto_submit: false,
             speak_on_summon: false,
-            engine: "windows".into(),
+            engine: "kokoro".into(),
             clip: String::new(),
             hold_key: true,
             live: true,

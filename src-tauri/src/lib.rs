@@ -925,12 +925,7 @@ fn wake_loop(app: &AppHandle) {
             continue;
         }
         said = rest; // "Engine, can you open…": the rest comes after "Yes sir?"
-        let clip = said_clip(&engine, "Yes sir?");
-        if clip.is_file() {
-            voice::play(&clip);
-        } else if let Ok(mut child) = voice::speak_windows("Yes sir?") {
-            let _ = child.wait(); // the British clip is still being made
-        }
+        say_short(&engine, "Yes sir?");
         rec.clear(); // don't hear our own reply
         gate.reset();
         follow = Some(Instant::now() + Duration::from_secs(8));
@@ -1016,10 +1011,9 @@ async fn speak_briefing(app: AppHandle) -> Result<(), String> {
 fn speak(app: &AppHandle, text: &str) -> Result<(), String> {
     let engine = app.state::<Engine>();
     stop_speech(&engine);
-    let v = engine.settings().voice;
-    if !matches!(v.engine.as_str(), "kokoro" | "chatterbox") {
-        *engine.speaking.lock().unwrap() = Some(voice::speak_windows(text)?);
-        return Ok(());
+    let mut v = engine.settings().voice;
+    if v.engine != "chatterbox" {
+        v.engine = "kokoro".into(); // Kokoro for everything else; Windows' own voice is never used
     }
     // Kokoro or Chatterbox: each sentence is made while the one before plays, so speech starts after the first
     // sentence instead of the whole reply. Playback is here, not in the helper, so talking over it cuts it off.
@@ -1143,13 +1137,9 @@ fn cached_clip(engine: &Engine, text: &str) -> Option<PathBuf> {
 
 /// Says a short phrase: the cached British clip when there is one, otherwise Windows' voice. Waits until done.
 fn say_short(engine: &Engine, text: &str) {
-    match cached_clip(engine, text) {
-        Some(clip) => voice::play(&clip),
-        None => {
-            if let Ok(mut child) = voice::speak_windows(text) {
-                let _ = child.wait();
-            }
-        }
+    // Without the voice pack there's no Kokoro: stay quiet rather than fall back to Windows' voice.
+    if let Some(clip) = cached_clip(engine, text) {
+        voice::play(&clip);
     }
 }
 

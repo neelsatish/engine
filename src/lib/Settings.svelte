@@ -66,7 +66,7 @@
   let settings = $state<Settings>({
     projects: [],
     knowledge: [],
-    voice: { model: "small.en", auto_submit: false, speak_on_summon: false, engine: "windows", clip: "", hold_key: true, live: true, wake: true, narrate: true },
+    voice: { model: "small.en", auto_submit: false, speak_on_summon: false, engine: "kokoro", clip: "", hold_key: true, live: true, wake: true, narrate: true },
     models: { agent: "haiku", answer: "sonnet" },
     folder: "",
     recent: [],
@@ -282,14 +282,11 @@
           <span class="desc">
             {settings.voice.engine === "chatterbox"
               ? "Only clone a voice you may use"
-              : settings.voice.engine === "kokoro"
-                ? "British, made on this PC"
-                : "Windows' built-in voice"}
+              : "British, made on this PC"}
           </span>
         </div>
         <select class="input" aria-label="Engine's voice" value={settings.voice.engine} onchange={(e) => setVoice({ engine: e.currentTarget.value })}>
           <option value="kokoro" disabled={!status?.kokoro}>British · Kokoro</option>
-          <option value="windows">Windows</option>
           <option value="chatterbox" disabled={!status?.chatterbox}>Chatterbox · cloned</option>
         </select>
       </div>
