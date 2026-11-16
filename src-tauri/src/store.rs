@@ -289,6 +289,15 @@ impl Store {
         Ok(())
     }
 
+    /// Today as a block range: ("YYYY-MM-DDT00:00", tomorrow "T00:00"), in local time.
+    pub fn today_range(&self) -> Result<(String, String)> {
+        self.0.query_row(
+            "SELECT date('now', 'localtime') || 'T00:00', date('now', 'localtime', '+1 day') || 'T00:00'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+    }
+
     /// The local date for prompts, e.g. "Monday 2026-11-16".
     pub fn today(&self) -> Result<String> {
         let (weekday, date): (i64, String) = self.0.query_row(

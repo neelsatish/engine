@@ -2,7 +2,7 @@
   // The home view: the dump box and today's briefing (Now, Running, Needs you, Done).
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import Orb, { type Process } from "$lib/Orb.svelte";
   import { type Block, todayRange } from "$lib/time";
 
@@ -33,6 +33,8 @@
   let input: HTMLTextAreaElement;
   let revising = $state<number | null>(null);
   let today = $state<Block[]>([]);
+  // Voice: "listening" while the mic is open, "transcribing" while Whisper works.
+  let voice = $state<"idle" | "listening" | "transcribing">("idle");
   let reviseNote = $state("");
 
   // Shown while the briefing is empty: one click puts an example in the dump box.
@@ -117,6 +119,41 @@
     }
   }
 
+  // What was heard goes into the dump box; with auto-submit on, it's sent straight away.
+  async function useHeard(heard: string, submitNow: boolean) {
+    if (!heard) return;
+    text = text.trim() ? `${text.trim()} ${heard}` : heard;
+    await tick();
+    if (submitNow) submit();
+    else input.focus();
+  }
+
+  async function toggleMic() {
+    note = "";
+    try {
+      if (voice === "listening") {
+        voice = "transcribing";
+        const heard = await invoke<string>("voice_stop");
+        const settings = await invoke<{ voice: { auto_submit: boolean } }>("get_settings").catch(() => null);
+        if (heard) await useHeard(heard, settings?.voice.auto_submit ?? false);
+        else note = "Didn't catch that. Try again, a little closer to the mic.";
+      } else {
+        await invoke("voice_start");
+      }
+    } catch (e) {
+      note = String(e);
+      voice = "idle";
+    }
+  }
+
+  async function readAloud() {
+    try {
+      await invoke("speak_briefing");
+    } catch (e) {
+      note = `Couldn't read the briefing: ${e}`;
+    }
+  }
+
   function onInputKey(e: KeyboardEvent) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -135,7 +172,19 @@
     input.focus();
     load();
     loadToday();
-    const offs = [listen("briefing", load), listen("schedule", loadToday)];
+    const offs = [
+      listen("briefing", load),
+      listen("schedule", loadToday),
+      listen<{ state: string; message: string }>("voice", (e) => {
+        if (e.payload.state === "error") {
+          note = e.payload.message;
+          voice = "idle";
+        } else {
+          voice = e.payload.state as typeof voice;
+        }
+      }),
+      listen<{ text: string; submit: boolean }>("heard", (e) => useHeard(e.payload.text, e.payload.submit)),
+    ];
     return () => offs.forEach((off) => off.then((f) => f()));
   });
 </script>
@@ -147,7 +196,15 @@
     submit();
   }}
 >
-  <label class="label" for="dump">Dump</label>
+  <div class="dump-head">
+    <label class="label" for="dump">Dump</label>
+    <button class="link speak" onclick={readAloud} title="Read the briefing aloud">
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"
+        ><path d="M11 5 6 9H3v6h3l5 4z" /><path d="M15.5 8.5a5 5 0 0 1 0 7" /><path d="M18.5 5.5a9 9 0 0 1 0 13" /></svg
+      >
+      Read aloud
+    </button>
+  </div>
   <div class="field glass">
     <textarea
       id="dump"
@@ -158,12 +215,30 @@
       placeholder="Dump anything: open an app, ask for a plan, hand off a task."
       spellcheck="false"
     ></textarea>
+    <button
+      class="mic"
+      class:on={voice === "listening"}
+      type="button"
+      aria-label={voice === "listening" ? "Stop and transcribe" : "Speak"}
+      aria-pressed={voice === "listening"}
+      title="Speak (or hold Ctrl+Alt+Space anywhere)"
+      disabled={voice === "transcribing"}
+      onclick={toggleMic}
+    >
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"
+        ><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0" /><path d="M12 18v3" /></svg
+      >
+    </button>
     <button class="send" type="submit" aria-label="Send" title="Send (Enter)" disabled={!text.trim()}>
       <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 10 4 15l5 5" /><path d="M20 4v7a4 4 0 0 1-4 4H4" /></svg>
     </button>
   </div>
   <p class="status" aria-live="polite">
-    {#if sorting}
+    {#if voice === "listening"}
+      <span class="indicator"><Orb process="listening" size={16} /></span>Listening… click the mic again (or let go of the keys) when you're done.
+    {:else if voice === "transcribing"}
+      <span class="indicator"><Orb process="thinking" size={16} /></span>Turning your words into text…
+    {:else if sorting}
       <span class="indicator"><Orb process="thinking" size={16} /></span>Sorting your dump…
     {:else if note}
       <span class="indicator"><span class="dot warn" aria-hidden="true"></span></span>{note}
@@ -340,6 +415,60 @@
 
   textarea::placeholder {
     color: var(--text-muted);
+  }
+
+  .dump-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .dump-head .label {
+    margin: 0;
+  }
+
+  .speak {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .speak svg {
+    width: 15px;
+    height: 15px;
+  }
+
+  .dump-head {
+    margin-bottom: var(--space-xs);
+  }
+
+  .mic {
+    display: grid;
+    place-items: center;
+    width: 38px;
+    height: 38px;
+    flex-shrink: 0;
+    border: 1px solid var(--border);
+    border-radius: 11px;
+    background: var(--surface-2);
+    color: var(--text-secondary);
+    transition: border-color var(--ease), color var(--ease), box-shadow var(--ease);
+  }
+
+  .mic:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--text);
+  }
+
+  .mic.on {
+    border-color: var(--danger);
+    color: var(--danger);
+    box-shadow: 0 0 0 4px rgb(240 113 138 / 0.18);
+  }
+
+  .mic:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
 
   .send {

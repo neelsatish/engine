@@ -4,14 +4,24 @@
   import { invoke } from "@tauri-apps/api/core";
   import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
   import { open } from "@tauri-apps/plugin-dialog";
+  import { listen } from "@tauri-apps/api/event";
   import { onMount } from "svelte";
 
   type Project = { name: string; folder: string };
-  type Settings = { projects: Project[]; knowledge: string[] };
+  type Voice = { model: string; auto_submit: boolean; speak_on_summon: boolean; engine: string; clip: string };
+  type Settings = { projects: Project[]; knowledge: string[]; voice: Voice };
+  type VoiceStatus = { python: boolean; whisper: boolean; chatterbox: boolean; own_env: boolean };
 
   let { onEditAliases }: { onEditAliases: () => void } = $props();
 
-  let settings = $state<Settings>({ projects: [], knowledge: [] });
+  let settings = $state<Settings>({
+    projects: [],
+    knowledge: [],
+    voice: { model: "small", auto_submit: false, speak_on_summon: false, engine: "windows", clip: "" },
+  });
+  let status = $state<VoiceStatus | null>(null);
+  let installing = $state(false);
+  let installLine = $state("");
   let newName = $state("");
   let autostart = $state(false);
   let version = $state("");
@@ -45,6 +55,27 @@
     if (folder) await save({ ...settings, knowledge: [...settings.knowledge, folder] });
   }
 
+  const setVoice = (patch: Partial<Voice>) => save({ ...settings, voice: { ...settings.voice, ...patch } });
+
+  async function chooseClip() {
+    const picked = await open({ title: "Choose a voice clip (about 10 seconds)", filters: [{ name: "Audio", extensions: ["wav", "mp3", "flac"] }] });
+    if (typeof picked === "string") await setVoice({ clip: picked });
+  }
+
+  async function installVoice() {
+    installing = true;
+    installLine = "Starting…";
+    try {
+      await invoke("install_voice");
+      installLine = "Installed.";
+    } catch (e) {
+      installLine = String(e);
+    } finally {
+      installing = false;
+      status = await invoke<VoiceStatus>("voice_status");
+    }
+  }
+
   async function setAutostart(on: boolean) {
     try {
       await (on ? enable() : disable());
@@ -62,6 +93,12 @@
     }
     autostart = await isEnabled().catch(() => false);
     version = await getVersion();
+    status = await invoke<VoiceStatus>("voice_status").catch(() => null);
+  });
+
+  onMount(() => {
+    const off = listen<string>("voice-install", (e) => (installLine = e.payload));
+    return () => off.then((f) => f());
   });
 </script>
 
@@ -125,6 +162,84 @@
   </section>
 
   <section class="card glass">
+    <h2>Voice</h2>
+    <p class="hint">
+      Hold <kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>Space</kbd> anywhere and speak, or click the mic in the dump box. Speech is
+      turned into text on this PC with Whisper.
+    </p>
+    <ul class="rows">
+      <li>
+        <div class="body">
+          <span class="name">Speech recognition</span>
+          <span class="path">
+            {#if !status}Checking…
+            {:else if status.whisper}Ready.
+            {:else if status.python}Needs faster-whisper: install the voice pack below, or run pip install faster-whisper.
+            {:else}Needs Python, or the voice pack below.{/if}
+          </span>
+        </div>
+        <select class="input" aria-label="Whisper model" value={settings.voice.model} onchange={(e) => setVoice({ model: e.currentTarget.value })}>
+          <option value="small">Small (fast)</option>
+          <option value="base.en">Base, English (fastest)</option>
+          <option value="large-v3-turbo">Large v3 turbo (best, 1.6 GB download)</option>
+        </select>
+      </li>
+      <li>
+        <div class="body">
+          <span class="name">Send what I say straight away</span>
+          <span class="path">Otherwise it waits in the dump box so you can check it.</span>
+        </div>
+        <button class="switch" role="switch" aria-checked={settings.voice.auto_submit} aria-label="Send what I say straight away"
+          onclick={() => setVoice({ auto_submit: !settings.voice.auto_submit })}><span></span></button>
+      </li>
+      <li>
+        <div class="body">
+          <span class="name">Read the briefing when I open Engine</span>
+          <span class="path">Or use Read aloud on the Briefing whenever you like.</span>
+        </div>
+        <button class="switch" role="switch" aria-checked={settings.voice.speak_on_summon} aria-label="Read the briefing when I open Engine"
+          onclick={() => setVoice({ speak_on_summon: !settings.voice.speak_on_summon })}><span></span></button>
+      </li>
+      <li>
+        <div class="body">
+          <span class="name">Engine's voice</span>
+          <span class="path">
+            {settings.voice.engine === "chatterbox"
+              ? "Chatterbox clones the clip below. Use only a voice you own or have permission to use."
+              : "Windows' built-in voice."}
+          </span>
+        </div>
+        <select class="input" aria-label="Engine's voice" value={settings.voice.engine} onchange={(e) => setVoice({ engine: e.currentTarget.value })}>
+          <option value="windows">Windows voice</option>
+          <option value="chatterbox" disabled={!status?.chatterbox}>Chatterbox (cloned)</option>
+        </select>
+      </li>
+      {#if settings.voice.engine === "chatterbox"}
+        <li>
+          <div class="body">
+            <span class="name">Voice clip</span>
+            <span class="path" title={settings.voice.clip}>{settings.voice.clip || "No clip yet: Chatterbox uses its default voice."}</span>
+          </div>
+          <button class="button" onclick={chooseClip}>Choose clip…</button>
+        </li>
+      {/if}
+      <li>
+        <div class="body">
+          <span class="name">Voice pack</span>
+          <span class="path" title={installLine}>
+            {#if installing || installLine}{installLine}
+            {:else if status?.own_env}Installed: Chatterbox and Whisper in Engine's own Python.
+            {:else}Chatterbox for a cloned voice, plus Whisper. About 3 GB, in its own Python, so your other Python stays as it is.{/if}
+          </span>
+        </div>
+        <button class="button" onclick={installVoice} disabled={installing || status?.own_env}>
+          {installing ? "Installing…" : status?.own_env ? "Installed" : "Install"}
+        </button>
+      </li>
+    </ul>
+  </section>
+
+  <section class="card glass">
     <h2>General</h2>
     <ul class="rows">
       <li>
@@ -184,6 +299,11 @@
 
   .rows > li {
     align-items: center;
+  }
+
+  select.input {
+    flex-shrink: 0;
+    max-width: 220px;
   }
 
   .add {

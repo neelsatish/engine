@@ -11,6 +11,7 @@
     waiting: { state: "waiting", label: "Waiting" },
     held: { state: "idle", variant: "blink", label: "Needs you" },
     updating: { state: "background", variant: "spiral", label: "Updating" },
+    listening: { state: "using", variant: "record", label: "Listening" },
   } satisfies Record<string, OrbOptions>;
 
   export type Process = keyof typeof PROCESSES;

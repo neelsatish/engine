@@ -5,6 +5,7 @@ pub mod router;
 pub mod schedule;
 pub mod settings;
 pub mod store;
+pub mod voice;
 
 use launcher::{Match, Target};
 use router::Kind;
@@ -32,6 +33,12 @@ struct Engine {
     work_dir: PathBuf,
     /// Running jobs and their agent's process id (0 until it starts).
     jobs: Mutex<HashMap<i64, u32>>,
+    /// The microphone, while push-to-talk is held.
+    recording: Mutex<Option<voice::Recording>>,
+    /// The Whisper/Chatterbox helper, while voice is in use.
+    helper: Mutex<Option<voice::Helper>>,
+    /// Windows speech in progress, so a new briefing (or Stop) can end it.
+    speaking: Mutex<Option<std::process::Child>>,
 }
 
 impl Engine {
@@ -458,6 +465,144 @@ fn task_done(id: i64, app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+// ---------- voice ----------
+
+impl Engine {
+    fn voice_env(&self) -> PathBuf {
+        self.work_dir.join("voice-env")
+    }
+
+    /// Runs `f` with the voice helper, starting it if needed.
+    fn with_helper<T>(&self, f: impl FnOnce(&mut voice::Helper) -> Result<T, String>) -> Result<T, String> {
+        let mut helper = self.helper.lock().unwrap();
+        if helper.is_none() {
+            *helper = Some(voice::Helper::start(&voice::python(&self.voice_env()), &self.work_dir.join("voice"))?);
+        }
+        let result = f(helper.as_mut().unwrap());
+        if result.as_ref().is_err_and(|e| e.contains("helper stopped")) {
+            *helper = None; // start fresh next time
+        }
+        result
+    }
+}
+
+fn voice_event(app: &AppHandle, state: &str, message: &str) {
+    let _ = app.emit("voice", serde_json::json!({"state": state, "message": message}));
+}
+
+fn start_listening(app: &AppHandle) -> Result<(), String> {
+    let engine = app.state::<Engine>();
+    let mut rec = engine.recording.lock().unwrap();
+    if rec.is_none() {
+        *rec = Some(voice::record()?);
+        voice_event(app, "listening", "");
+    }
+    Ok(())
+}
+
+/// Stops the microphone and transcribes what was said. Empty when nothing was caught.
+fn stop_listening(app: &AppHandle) -> Result<String, String> {
+    let engine = app.state::<Engine>();
+    let Some(rec) = engine.recording.lock().unwrap().take() else { return Ok(String::new()) };
+    let wav = engine.work_dir.join("voice").join("heard.wav");
+    let Some(wav) = rec.finish(&wav)? else {
+        voice_event(app, "idle", "");
+        return Ok(String::new());
+    };
+    voice_event(app, "transcribing", "");
+    let model = engine.settings().voice.model;
+    let text = engine.with_helper(|h| h.transcribe(&wav, &model));
+    let _ = fs::remove_file(&wav); // the words are kept, the recording isn't
+    voice_event(app, "idle", "");
+    text
+}
+
+/// Push-to-talk released: transcribe, then hand the words to the UI (which may send them straight away).
+fn heard(app: &AppHandle) {
+    match stop_listening(app) {
+        Ok(text) if !text.is_empty() => {
+            show(app);
+            let _ = app.emit("heard", serde_json::json!({"text": text, "submit": app.state::<Engine>().settings().voice.auto_submit}));
+        }
+        Ok(_) => voice_event(app, "error", "Didn't catch that. Hold the key while you speak."),
+        Err(e) => voice_event(app, "error", &e),
+    }
+}
+
+#[tauri::command]
+fn voice_start(app: AppHandle) -> Result<(), String> {
+    start_listening(&app)
+}
+
+#[tauri::command]
+async fn voice_stop(app: AppHandle) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || stop_listening(&app)).await.map_err(|e| e.to_string())?
+}
+
+/// Reads the briefing aloud in the chosen voice.
+#[tauri::command]
+async fn speak_briefing(app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let engine = app.state::<Engine>();
+        let items = engine.store().briefing().map_err(|e| e.to_string())?;
+        let (from, to) = engine.store().today_range().map_err(|e| e.to_string())?;
+        let today = engine.store().blocks(&from, &to).map_err(|e| e.to_string())?;
+        speak(&app, &voice::briefing_text(&items, &today))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn speak(app: &AppHandle, text: &str) -> Result<(), String> {
+    let engine = app.state::<Engine>();
+    stop_speech(&engine);
+    let v = engine.settings().voice;
+    if v.engine == "chatterbox" {
+        let out = engine.work_dir.join("voice").join("spoken.wav");
+        let request = serde_json::json!({"cmd": "speak", "text": text, "clip": v.clip, "out": out});
+        return engine.with_helper(|h| h.call(&request)).map(|_| ());
+    }
+    *engine.speaking.lock().unwrap() = Some(voice::speak_windows(text)?);
+    Ok(())
+}
+
+fn stop_speech(engine: &Engine) {
+    if let Some(mut child) = engine.speaking.lock().unwrap().take() {
+        let _ = child.kill();
+    }
+}
+
+#[tauri::command]
+fn stop_speaking(engine: State<Engine>) {
+    stop_speech(&engine);
+}
+
+#[tauri::command]
+async fn voice_status(app: AppHandle) -> serde_json::Value {
+    tauri::async_runtime::spawn_blocking(move || {
+        let engine = app.state::<Engine>();
+        let mut status = voice::status(&voice::python(&engine.voice_env()));
+        status["own_env"] = serde_json::Value::Bool(engine.voice_env().join("Scripts").join("python.exe").is_file());
+        status
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// Installs Engine's own voice environment (Chatterbox and faster-whisper). Started by the user from Settings.
+#[tauri::command]
+async fn install_voice(app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let env = app.state::<Engine>().voice_env();
+        *app.state::<Engine>().helper.lock().unwrap() = None; // the old helper may be using the old Python
+        voice::install(&env, |line| {
+            let _ = app.emit("voice-install", line);
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 fn blocks(from: String, to: String, engine: State<Engine>) -> Result<Vec<schedule::Block>, String> {
     engine.store().blocks(&from, &to).map_err(|e| e.to_string())
@@ -514,6 +659,8 @@ fn toggle(app: &AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let summon = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space);
+    // Hold to talk.
+    let talk = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::Space);
 
     tauri::Builder::default()
         // Must be first: a second launch just brings the running Engine forward.
@@ -528,6 +675,18 @@ pub fn run() {
                 .with_handler(move |app, shortcut, event| {
                     if shortcut == &summon && event.state() == ShortcutState::Pressed {
                         toggle(app);
+                    } else if shortcut == &talk {
+                        match event.state() {
+                            ShortcutState::Pressed => {
+                                if let Err(e) = start_listening(app) {
+                                    voice_event(app, "error", &e);
+                                }
+                            }
+                            ShortcutState::Released => {
+                                let app = app.clone();
+                                std::thread::spawn(move || heard(&app));
+                            }
+                        }
                     }
                 })
                 .build(),
@@ -538,7 +697,28 @@ pub fn run() {
             let work_dir = app.path().app_data_dir()?;
             fs::create_dir_all(&work_dir)?;
             let store = Mutex::new(Store::open(&work_dir.join("engine.db"))?);
-            app.manage(Engine { apps: Mutex::new(vec![]), aliases_path, settings_path, store, work_dir, jobs: Mutex::default() });
+            app.manage(Engine {
+                apps: Mutex::new(vec![]),
+                aliases_path,
+                settings_path,
+                store,
+                work_dir,
+                jobs: Mutex::default(),
+                recording: Mutex::default(),
+                helper: Mutex::default(),
+                speaking: Mutex::default(),
+            });
+
+            // Free the voice models after a few idle minutes, so Engine doesn't hold memory while unused.
+            let reaper = app.handle().clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_secs(60));
+                let engine = reaper.state::<Engine>();
+                let mut helper = engine.helper.lock().unwrap();
+                if helper.as_ref().is_some_and(|h| h.last_used.elapsed() > voice::IDLE) {
+                    *helper = None;
+                }
+            });
             pump(app.handle()); // jobs queued before Engine last closed
 
             if !std::env::args().any(|a| a == "--autostart") {
@@ -553,6 +733,9 @@ pub fn run() {
 
             if let Err(e) = app.global_shortcut().register(summon) {
                 eprintln!("couldn't register Ctrl+Shift+Space: {e}");
+            }
+            if let Err(e) = app.global_shortcut().register(talk) {
+                eprintln!("couldn't register Ctrl+Alt+Space: {e}");
             }
 
             let show_item = MenuItem::with_id(app, "show", "Show Engine", true, None::<&str>)?;
@@ -597,6 +780,12 @@ pub fn run() {
             approve,
             revise,
             task_done,
+            voice_start,
+            voice_stop,
+            speak_briefing,
+            stop_speaking,
+            voice_status,
+            install_voice,
             blocks,
             save_block,
             delete_block,

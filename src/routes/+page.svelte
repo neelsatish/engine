@@ -34,6 +34,8 @@
     view = "briefing";
     await tick();
     briefing?.focus();
+    const settings = await invoke<{ voice: { speak_on_summon: boolean } }>("get_settings").catch(() => null);
+    if (settings?.voice.speak_on_summon) invoke("speak_briefing").catch(() => {});
   }
 
   // Checks GitHub Releases. A new version downloads in the background, then waits for one click.

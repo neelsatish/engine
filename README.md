@@ -65,6 +65,19 @@ If you've set a notes folder, the plan is also written to `<vault>/Engine/` as a
 Obsidian. Engine never overwrites a note there: a second plan with the same name gets a number. Drag a block to move
 it (it snaps to 15 minutes), click it to edit or delete it, or use **Add block**.
 
+### Voice
+
+Hold `Ctrl+Alt+Space` anywhere and speak, or click the mic in the dump box. Engine records your default microphone,
+turns it into text on this PC with Whisper (faster-whisper), and puts the words in the dump box for you to check, or
+sends them straight away if you turn that on. Recordings are deleted as soon as they're transcribed. **Read aloud**
+speaks a short summary of the briefing, and Settings can make Engine do that whenever you open it.
+
+Speech recognition uses `python` on your PATH with `faster-whisper` installed, and the Whisper model you pick
+(Small by default). The model stays loaded while you use voice and is unloaded after 5 idle minutes. Engine speaks with
+Windows' built-in voice by default. The **voice pack** in Settings (about 3 GB, started by you) installs Chatterbox and
+Whisper into Engine's own Python 3.11 with `uv`, after which Engine can speak in a voice cloned from a short clip.
+Only clone a voice you own or have permission to use.
+
 ### Settings
 
 - **Projects:** name a folder ("my app"), and dumps that mention it run there.
