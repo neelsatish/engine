@@ -2,7 +2,7 @@
 
 export type Block = { id: number; title: string; start: string; end: string; kind: string; note: string };
 
-export const KINDS = ["study", "deadline", "test", "recording", "other"];
+export const KINDS = ["study", "deadline", "test", "recording", "reminder", "other"];
 
 export const pad = (n: number) => String(n).padStart(2, "0");
 

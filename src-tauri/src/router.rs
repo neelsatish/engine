@@ -9,10 +9,12 @@ pub enum Kind {
     Instant,
     /// One model reply, shown in the briefing.
     Answer,
-    /// Background agent work (agents arrive in phase 3).
+    /// Background agent work.
     Job,
     /// Seen by others or can't be undone: always held for approval.
     Outward,
+    /// A reminder at a time, shown as a Windows notification.
+    Reminder,
 }
 
 impl Kind {
@@ -22,6 +24,7 @@ impl Kind {
             Kind::Answer => "answer",
             Kind::Job => "job",
             Kind::Outward => "outward",
+            Kind::Reminder => "reminder",
         }
     }
 }
@@ -37,6 +40,9 @@ pub struct Item {
     /// For a job: which of the person's projects it belongs to, by name.
     #[serde(default)]
     pub project: Option<String>,
+    /// For a reminder: when, as local time "YYYY-MM-DDTHH:MM".
+    #[serde(default)]
+    pub when: Option<String>,
 }
 
 pub const MODEL: &str = "haiku";
@@ -45,24 +51,26 @@ pub const ANSWER_MODEL: &str = "sonnet";
 pub const SYSTEM: &str = r#"You sort a person's brain dump for Engine, their desktop assistant. Split it into separate items, in the order given, and classify each one.
 
 Kinds:
-- instant: open an app, website or folder on this PC. title: "Open <name>". detail: only the name, without "my" (for example "YouTube" or "Downloads folder"); use one of the person's shortcut names when one fits. url: the https URL when it is a website; leave it out for apps and folders.
+- instant: open an app, website or folder on this PC; also media and volume controls (play, pause, next song, volume 30), locking the PC, and playing or searching something on YouTube or Spotify or the web. For those controls, detail is the command as the person said it ("pause the music", "play lofi on spotify"). title: "Open <name>". detail: only the name, without "my" (for example "YouTube" or "Downloads folder"); use one of the person's shortcut names when one fits. url: the https URL when it is a website; leave it out for apps and folders.
 - answer: something a single written reply can fully deliver with no tools, no web, and none of the person's files or accounts: an explanation, a plan, ideas, a draft text. detail: the complete question with every fact the person gave, written so it stands alone.
 - job: work that needs tools: the person's files, projects, notes or documents, their email or other accounts, the web, or running code. An AI agent does it on its own: it can search and read the web, read and write files, run commands, and open websites, apps and files when it finishes. detail: complete instructions for that agent, including the person's own words. project: when the job is about one of the person's projects, that project's name exactly as listed; leave it out otherwise.
+- reminder: the person wants to be reminded of something at a time ("remind me in 20 minutes to stretch", "remind me at 6pm to call mum"). title: what to remind them of. when: the local time it's due, "YYYY-MM-DDTHH:MM", worked out from Now.
 - outward: anything other people will see or that cannot be undone: sending or replying to a message, posting, uploading, publishing, deleting, paying. detail: exactly what would happen.
 
 Rules:
 - "Draft" or "prepare" is never outward. Only the actual sending, posting or uploading is. If one request asks for both, make two items.
 - Work that ends in opening something ("find the best X and open it") is one job, not a job plus an instant item.
 - Work that should only happen after the person does something themselves ("once I've recorded them, write the captions") belongs inside the same job, never as its own item: that agent will ask the person to do their part and hand the rest back as a follow-up.
+- Never put a folder or file path in detail unless the person wrote it. You don't know where agents will work, and they know their own folder.
 - One item per distinct request. Do not invent, merge or skip requests. Ignore greetings such as "hey Engine".
 - title: a short imperative under 60 characters, in the person's language."#;
 
-pub const SCHEMA: &str = r#"{"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"kind":{"type":"string","enum":["instant","answer","job","outward"]},"title":{"type":"string"},"detail":{"type":"string"},"url":{"type":"string"},"project":{"type":"string"}},"required":["kind","title","detail"]}}},"required":["items"]}"#;
+pub const SCHEMA: &str = r#"{"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"kind":{"type":"string","enum":["instant","answer","job","outward","reminder"]},"title":{"type":"string"},"detail":{"type":"string"},"url":{"type":"string"},"project":{"type":"string"},"when":{"type":"string"}},"required":["kind","title","detail"]}}},"required":["items"]}"#;
 
-/// The router's message: the person's shortcut and project names, then their dump.
-pub fn prompt(dump: &str, shortcuts: &[String], projects: &[String]) -> String {
+/// The router's message: the time, the person's shortcut and project names, then their dump.
+pub fn prompt(dump: &str, shortcuts: &[String], projects: &[String], now: &str) -> String {
     let projects = if projects.is_empty() { "(none)".to_string() } else { projects.join(", ") };
-    format!("Shortcuts: {}\nProjects: {projects}\n\nDump:\n{dump}", shortcuts.join(", "))
+    format!("Now: {now}\nShortcuts: {}\nProjects: {projects}\n\nDump:\n{dump}", shortcuts.join(", "))
 }
 
 pub fn parse(out: serde_json::Value) -> Result<Vec<Item>, String> {
@@ -129,7 +137,7 @@ mod tests {
                 &std::env::temp_dir(),
                 MODEL,
                 SYSTEM,
-                &prompt(dump, &["gmail".into(), "youtube".into()], &["my app".into()]),
+                &prompt(dump, &["gmail".into(), "youtube".into()], &["my app".into()], "Monday 2026-11-16T15:00"),
                 Some(SCHEMA),
             );
             let items = parse(out.unwrap()).unwrap();

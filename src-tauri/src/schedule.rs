@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const KINDS: [&str; 5] = ["study", "deadline", "test", "recording", "other"];
+pub const KINDS: [&str; 6] = ["study", "deadline", "test", "recording", "reminder", "other"];
 
 /// One block. Times are local, as "YYYY-MM-DDTHH:MM", so they sort and compare as plain strings.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]

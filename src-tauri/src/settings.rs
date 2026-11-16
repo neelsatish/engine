@@ -11,6 +11,28 @@ pub struct Settings {
     /// Folders agents may read when a job touches the user's notes. The first is the Obsidian vault.
     pub knowledge: Vec<String>,
     pub voice: Voice,
+    pub models: Models,
+    /// The folder new jobs work in, chosen in the dump box like a working folder in Claude. Empty: none.
+    pub folder: String,
+    /// Folders chosen recently, newest first.
+    pub recent: Vec<String>,
+}
+
+pub const MODELS: [&str; 4] = ["haiku", "sonnet", "opus", "fable"];
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(default)]
+pub struct Models {
+    /// Background agents (jobs).
+    pub agent: String,
+    /// Answers and the end-of-day review.
+    pub answer: String,
+}
+
+impl Default for Models {
+    fn default() -> Self {
+        Self { agent: "haiku".into(), answer: "sonnet".into() }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -76,6 +98,21 @@ impl Settings {
         if !["windows", "chatterbox"].contains(&self.voice.engine.as_str()) {
             self.voice.engine = "windows".into();
         }
+        let defaults = Models::default();
+        if !MODELS.contains(&self.models.agent.as_str()) {
+            self.models.agent = defaults.agent;
+        }
+        if !MODELS.contains(&self.models.answer.as_str()) {
+            self.models.answer = defaults.answer;
+        }
+        // The current folder leads the recent list; six is plenty.
+        self.folder = self.folder.trim().to_string();
+        if !self.folder.is_empty() {
+            self.recent.insert(0, self.folder.clone());
+        }
+        let mut seen = std::collections::HashSet::new();
+        self.recent.retain(|f| !f.trim().is_empty() && seen.insert(f.trim().to_lowercase()));
+        self.recent.truncate(6);
         let mut seen = std::collections::HashSet::new();
         self.knowledge.retain_mut(|k| {
             *k = k.trim().to_string();
@@ -119,12 +156,17 @@ mod tests {
             ],
             knowledge: vec!["C:\\Notes".into(), " c:\\notes ".into(), "".into()],
             voice: Voice { model: "huge".into(), ..Voice::default() },
+            models: Models { agent: "opus".into(), answer: "gpt".into() },
+            folder: "C:\\work".into(),
+            recent: vec!["C:\\old".into(), "c:\\WORK".into()],
         };
         let saved = messy.save(&path).unwrap();
         let app = Project { name: "My App".into(), folder: "C:\\code\\app".into(), runner: "codex".into() };
         assert_eq!(saved.projects, [app]);
         assert_eq!(saved.knowledge, ["C:\\Notes"]);
         assert_eq!(saved.voice.model, "small"); // unknown models fall back
+        assert_eq!((saved.models.agent.as_str(), saved.models.answer.as_str()), ("opus", "sonnet"));
+        assert_eq!(saved.recent, ["C:\\work", "C:\\old"]); // current first, no case-duplicates
         assert_eq!(Settings::load(&path).unwrap(), saved);
         assert_eq!(saved.project("my app").map(|p| p.folder.as_str()), Some("C:\\code\\app"));
         assert!(saved.project("other").is_none());

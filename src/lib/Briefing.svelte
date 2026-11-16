@@ -1,6 +1,7 @@
 <script lang="ts">
   // The home view: the dump box and today's briefing (Now, Running, Needs you, Done).
   import { invoke } from "@tauri-apps/api/core";
+  import { open as openDialog } from "@tauri-apps/plugin-dialog";
   import { listen } from "@tauri-apps/api/event";
   import { onMount, tick } from "svelte";
   import Orb, { type Process } from "$lib/Orb.svelte";
@@ -33,6 +34,42 @@
   let input: HTMLTextAreaElement;
   let revising = $state<number | null>(null);
   let today = $state<Block[]>([]);
+  // The working folder and agent model, shown as chips in the dump box (saved in Settings).
+  type Prefs = { folder: string; recent: string[]; models: { agent: string; answer: string } };
+  let prefs = $state<Prefs & Record<string, unknown>>({ folder: "", recent: [], models: { agent: "haiku", answer: "sonnet" } });
+  let folderMenu = $state(false);
+  const MODEL_NAMES: Record<string, string> = { haiku: "Haiku", sonnet: "Sonnet", opus: "Opus", fable: "Fable" };
+  const baseName = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() ?? p;
+
+  async function loadPrefs() {
+    try {
+      prefs = await invoke("get_settings");
+    } catch {
+      // a broken settings file shows its error in Settings
+    }
+  }
+
+  async function savePrefs(patch: Partial<Prefs>) {
+    try {
+      prefs = await invoke("save_settings", { settings: { ...prefs, ...patch } });
+    } catch (e) {
+      note = String(e);
+    }
+  }
+
+  async function chooseFolder() {
+    folderMenu = false;
+    const picked = await openDialog({ directory: true, title: "Choose a folder for Engine to work in" });
+    if (typeof picked === "string") await savePrefs({ folder: picked });
+    input.focus();
+  }
+
+  async function useFolder(folder: string) {
+    folderMenu = false;
+    await savePrefs({ folder });
+    input.focus();
+  }
+
   // Voice: "listening" while the mic is open, "transcribing" while Whisper works.
   let voice = $state<"idle" | "listening" | "transcribing">("idle");
   let reviseNote = $state("");
@@ -180,6 +217,7 @@
     input.focus();
     load();
     loadToday();
+    loadPrefs();
     const offs = [
       listen("briefing", load),
       listen("schedule", loadToday),
@@ -192,6 +230,7 @@
         }
       }),
       listen<{ text: string; submit: boolean }>("heard", (e) => useHeard(e.payload.text, e.payload.submit)),
+      listen<Prefs & Record<string, unknown>>("settings", (e) => (prefs = e.payload)),
     ];
     return () => offs.forEach((off) => off.then((f) => f()));
   });
@@ -222,6 +261,7 @@
     </span>
   </div>
   <div class="field glass">
+    <div class="top">
     <textarea
       id="dump"
       bind:this={input}
@@ -231,6 +271,53 @@
       placeholder="Dump anything: open an app, ask for a plan, hand off a task."
       spellcheck="false"
     ></textarea>
+    </div>
+    <div class="tools">
+      <div class="chips-left">
+        <div class="menu-wrap">
+          <button
+            type="button"
+            class="tool-chip"
+            aria-haspopup="menu"
+            aria-expanded={folderMenu}
+            title={prefs.folder ? `Jobs work in ${prefs.folder}` : "Choose a folder for jobs to work in"}
+            onclick={() => (folderMenu = !folderMenu)}
+          >
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"
+              ><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /></svg
+            >
+            {prefs.folder ? baseName(prefs.folder) : "No folder"}
+          </button>
+          {#if folderMenu}
+            <div class="menu glass" role="menu">
+              {#each prefs.recent as f (f)}
+                <button role="menuitemradio" aria-checked={f === prefs.folder} onclick={() => useFolder(f)} title={f}>
+                  <span class="m-name">{baseName(f)}</span><span class="m-path">{f}</span>
+                </button>
+              {/each}
+              <button role="menuitem" onclick={chooseFolder}><span class="m-name">Choose folder…</span></button>
+              {#if prefs.folder}
+                <button role="menuitem" onclick={() => useFolder("")}
+                  ><span class="m-name">No folder</span><span class="m-path">Each job gets its own folder</span></button
+                >
+              {/if}
+            </div>
+          {/if}
+        </div>
+        <label class="tool-chip model" title="The model background agents use">
+          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"
+            ><path d="M12 3l1.8 4.6L18 9l-4.2 1.4L12 15l-1.8-4.6L6 9l4.2-1.4z" /><path d="M19 15l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z" /></svg
+          >
+          <select
+            aria-label="Agent model"
+            value={prefs.models.agent}
+            onchange={(e) => savePrefs({ models: { ...prefs.models, agent: e.currentTarget.value } })}
+          >
+            {#each Object.entries(MODEL_NAMES) as [id, name] (id)}<option value={id}>{name}</option>{/each}
+          </select>
+        </label>
+      </div>
+      <div class="chips-right">
     <button
       class="mic"
       class:on={voice === "listening"}
@@ -248,6 +335,8 @@
     <button class="send" type="submit" aria-label="Send" title="Send (Enter)" disabled={!text.trim()}>
       <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 10 4 15l5 5" /><path d="M20 4v7a4 4 0 0 1-4 4H4" /></svg>
     </button>
+      </div>
+    </div>
   </div>
   <p class="status" aria-live="polite">
     {#if voice === "listening"}
@@ -399,14 +488,16 @@
 
 <style>
   .dump {
+    position: relative;
+    z-index: 5; /* above the cards below, so the folder menu isn't hidden behind them */
     margin: var(--space-xs) 0 var(--space-sm);
   }
 
   .field {
     display: flex;
-    align-items: flex-end;
+    flex-direction: column;
     gap: var(--space-sm);
-    padding: var(--space-md);
+    padding: var(--space-md) var(--space-md) 10px;
     border-radius: 14px;
     transition: border-color var(--ease), box-shadow var(--ease);
   }
@@ -414,6 +505,110 @@
   .field:focus-within {
     border-color: var(--accent);
     box-shadow: 0 0 0 4px var(--accent-glow);
+  }
+
+  .top {
+    display: flex;
+  }
+
+  .tools {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-sm);
+  }
+
+  .chips-left,
+  .chips-right {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    min-width: 0;
+  }
+
+  .tool-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 220px;
+    height: 30px;
+    padding: 0 10px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: rgb(29 25 42 / 0.8);
+    color: var(--text-secondary);
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+    transition: border-color var(--ease), color var(--ease);
+  }
+
+  .tool-chip:hover {
+    border-color: var(--accent);
+    color: var(--text);
+  }
+
+  .tool-chip svg {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+  }
+
+  .tool-chip select {
+    border: 0;
+    outline: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .menu-wrap {
+    position: relative;
+  }
+
+  .menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    min-width: 260px;
+    max-width: 420px;
+    padding: 4px;
+    background: rgb(19 16 28 / 0.97);
+    box-shadow: 0 12px 32px rgb(0 0 0 / 0.5);
+  }
+
+  .menu button {
+    display: flex;
+    flex-direction: column;
+    padding: 7px 10px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    text-align: left;
+  }
+
+  .menu button:hover,
+  .menu button[aria-checked="true"] {
+    background: var(--surface-2);
+  }
+
+  .m-name {
+    color: var(--text);
+    font-size: 13px;
+  }
+
+  .m-path {
+    overflow: hidden;
+    color: var(--text-muted);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   textarea {
@@ -635,6 +830,7 @@
   .kind.test { background: #f0718a; }
   .kind.deadline { background: #f2b85c; }
   .kind.recording { background: #5fd4a0; }
+  .kind.reminder { background: #c9a8ff; border-radius: 50%; }
 
   .proposal {
     max-height: 200px;

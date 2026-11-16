@@ -39,6 +39,8 @@ pub struct Job {
     pub project: String,
     /// For an approved action: the one outward tool it may call once ("*" for any). Empty for normal jobs.
     pub tool: String,
+    /// The folder chosen in the dump box when the job was made, or empty.
+    pub folder: String,
 }
 
 /// An approval card or a needs-you task, waiting on the user.
@@ -50,6 +52,7 @@ pub struct Held {
     pub detail: String,
     pub tool: String,
     pub project: String,
+    pub folder: String,
 }
 
 const SCHEMA: &str = "
@@ -100,6 +103,13 @@ impl Store {
             // For an approval card, the tool the agent would use; for an approved job, the one tool it may use once.
             db.execute_batch("ALTER TABLE items ADD COLUMN tool TEXT NOT NULL DEFAULT ''; PRAGMA user_version = 4;")?;
         }
+        if db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? < 5 {
+            db.execute_batch(
+                "ALTER TABLE items ADD COLUMN folder TEXT NOT NULL DEFAULT '';
+                 ALTER TABLE blocks ADD COLUMN fired INTEGER NOT NULL DEFAULT 0;
+                 PRAGMA user_version = 5;",
+            )?;
+        }
         // An answer or job that was mid-flight when Engine quit will never finish.
         db.execute(
             "UPDATE items SET status = 'failed', result = 'Engine closed before this finished.' WHERE status = 'running'",
@@ -123,20 +133,31 @@ impl Store {
 
     /// Queues a job for an agent. `project` is a project name from Settings, or empty; `tool` is set only for an
     /// approved action (see `Job::tool`).
-    pub fn add_job(&self, dump: Option<i64>, title: &str, detail: &str, project: &str, tool: &str) -> Result<i64> {
+    pub fn add_job(&self, dump: Option<i64>, title: &str, detail: &str, project: &str, tool: &str, folder: &str) -> Result<i64> {
         self.0.execute(
-            "INSERT INTO items (dump_id, kind, title, detail, status, project, tool)
-             VALUES (?1, 'job', ?2, ?3, 'queued', ?4, ?5)",
-            params![dump, title, detail, project, tool],
+            "INSERT INTO items (dump_id, kind, title, detail, status, project, tool, folder)
+             VALUES (?1, 'job', ?2, ?3, 'queued', ?4, ?5, ?6)",
+            params![dump, title, detail, project, tool, folder],
         )?;
         Ok(self.0.last_insert_rowid())
     }
 
     /// Holds an approval card (`kind` "outward") or a needs-you task (`kind` "task") for the user.
-    pub fn add_held(&self, kind: &str, dump: Option<i64>, title: &str, detail: &str, tool: &str, project: &str) -> Result<i64> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_held(
+        &self,
+        kind: &str,
+        dump: Option<i64>,
+        title: &str,
+        detail: &str,
+        tool: &str,
+        project: &str,
+        folder: &str,
+    ) -> Result<i64> {
         self.0.execute(
-            "INSERT INTO items (dump_id, kind, title, detail, status, tool, project) VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6)",
-            params![dump, kind, title, detail, tool, project],
+            "INSERT INTO items (dump_id, kind, title, detail, status, tool, project, folder)
+             VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6, ?7)",
+            params![dump, kind, title, detail, tool, project, folder],
         )?;
         Ok(self.0.last_insert_rowid())
     }
@@ -146,7 +167,7 @@ impl Store {
         self.0
             .query_row(
                 "UPDATE items SET status = ?2 WHERE id = ?1 AND status = 'held'
-                 RETURNING kind, dump_id, title, detail, tool, project",
+                 RETURNING kind, dump_id, title, detail, tool, project, folder",
                 params![id, status],
                 |r| {
                     Ok(Held {
@@ -156,6 +177,7 @@ impl Store {
                         detail: r.get(3)?,
                         tool: r.get(4)?,
                         project: r.get(5)?,
+                        folder: r.get(6)?,
                     })
                 },
             )
@@ -186,9 +208,18 @@ impl Store {
             .query_row(
                 "UPDATE items SET status = 'running', result = 'Starting', process = 'thinking'
                  WHERE id = (SELECT id FROM items WHERE kind = 'job' AND status = 'queued' ORDER BY id LIMIT 1)
-                 RETURNING id, dump_id, detail, project, tool",
+                 RETURNING id, dump_id, detail, project, tool, folder",
                 [],
-                |r| Ok(Job { id: r.get(0)?, dump: r.get(1)?, prompt: r.get(2)?, project: r.get(3)?, tool: r.get(4)? }),
+                |r| {
+                    Ok(Job {
+                        id: r.get(0)?,
+                        dump: r.get(1)?,
+                        prompt: r.get(2)?,
+                        project: r.get(3)?,
+                        tool: r.get(4)?,
+                        folder: r.get(5)?,
+                    })
+                },
             )
             .optional()
     }
@@ -298,6 +329,34 @@ impl Store {
         )
     }
 
+    /// Now in local time, "YYYY-MM-DDTHH:MM", with the weekday in front for prompts ("Monday 2026-11-16T15:00").
+    pub fn now(&self) -> Result<(String, String)> {
+        let (weekday, now): (i64, String) = self.0.query_row(
+            "SELECT CAST(strftime('%w', 'now', 'localtime') AS INTEGER), strftime('%Y-%m-%dT%H:%M', 'now', 'localtime')",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+        Ok((now.clone(), format!("{} {now}", days[weekday as usize])))
+    }
+
+    /// `t` ("YYYY-MM-DDTHH:MM") plus `minutes`, in the same format.
+    pub fn add_minutes(&self, t: &str, minutes: i64) -> Result<String> {
+        self.0.query_row("SELECT strftime('%Y-%m-%dT%H:%M', ?1, ?2)", params![t, format!("{minutes:+} minutes")], |r| r.get(0))
+    }
+
+    /// Reminders that are due and haven't been shown yet; marks them shown.
+    pub fn take_due_reminders(&self, now: &str) -> Result<Vec<Block>> {
+        let mut q = self.0.prepare(
+            "UPDATE blocks SET fired = 1 WHERE kind = 'reminder' AND fired = 0 AND start <= ?1
+             RETURNING id, title, start, end, kind, note",
+        )?;
+        q.query_map([now], |r| {
+            Ok(Block { id: r.get(0)?, title: r.get(1)?, start: r.get(2)?, end: r.get(3)?, kind: r.get(4)?, note: r.get(5)? })
+        })?
+        .collect()
+    }
+
     /// The day after `date` ("YYYY-MM-DD").
     pub fn day_after(&self, date: &str) -> Result<String> {
         self.0.query_row("SELECT date(?1, '+1 day')", [date], |r| r.get(0))
@@ -353,10 +412,17 @@ mod tests {
     #[test]
     fn jobs_queue_run_and_cancel() {
         let s = Store::open(Path::new(":memory:")).unwrap();
-        let first = s.add_job(None, "first", "do one", "my app", "").unwrap();
-        let second = s.add_job(None, "second", "do two", "", "").unwrap();
+        let first = s.add_job(None, "first", "do one", "my app", "", "C:\\work").unwrap();
+        let second = s.add_job(None, "second", "do two", "", "", "").unwrap();
 
-        let job = Job { id: first, dump: None, prompt: "do one".into(), project: "my app".into(), tool: String::new() };
+        let job = Job {
+            id: first,
+            dump: None,
+            prompt: "do one".into(),
+            project: "my app".into(),
+            tool: String::new(),
+            folder: "C:\\work".into(),
+        };
         assert_eq!(s.claim_job().unwrap(), Some(job));
         s.set_activity(first, "viewing", "Reading plan.md").unwrap();
         let item = &s.briefing().unwrap()[0];
@@ -397,9 +463,22 @@ mod tests {
     }
 
     #[test]
+    fn reminders_fire_once() {
+        let s = Store::open(Path::new(":memory:")).unwrap();
+        assert_eq!(s.add_minutes("2026-11-16T23:58", 5).unwrap(), "2026-11-17T00:03");
+        let r = |t: &str, at: &str| Block { title: t.into(), start: at.into(), end: s.add_minutes(at, 5).unwrap(), kind: "reminder".into(), ..Default::default() };
+        s.save_block(r("Stretch", "2026-11-16T10:00")).unwrap();
+        s.save_block(r("Call", "2026-11-16T18:00")).unwrap();
+        let due: Vec<_> = s.take_due_reminders("2026-11-16T12:00").unwrap().into_iter().map(|b| b.title).collect();
+        assert_eq!(due, ["Stretch"]);
+        assert!(s.take_due_reminders("2026-11-16T12:00").unwrap().is_empty()); // only once
+        assert!(s.now().unwrap().0.contains('T'));
+    }
+
+    #[test]
     fn held_cards_are_taken_once() {
         let s = Store::open(Path::new(":memory:")).unwrap();
-        let card = s.add_held("outward", None, "Send reply to Sam", "To: Sam\n\nYes!", "mcp__x__send", "").unwrap();
+        let card = s.add_held("outward", None, "Send reply to Sam", "To: Sam\n\nYes!", "mcp__x__send", "", "").unwrap();
         let item = &s.briefing().unwrap()[0];
         assert_eq!((item.kind.as_str(), item.status.as_str(), item.detail.as_str()), ("outward", "held", "To: Sam\n\nYes!"));
 

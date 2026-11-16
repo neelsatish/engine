@@ -12,7 +12,8 @@ use std::{
     process::{Command, Stdio},
 };
 
-pub const MODEL: &str = "haiku";
+/// The audit always uses Haiku: it's a quick check, whatever model did the work.
+pub const AUDIT_MODEL: &str = "haiku";
 /// Jobs past this many wait in the queue.
 pub const MAX_RUNNING: usize = 3;
 
@@ -227,17 +228,22 @@ pub fn run(
     log_dir: &Path,
     notes: &[String],
     approved: Option<(&str, &Path)>,
+    model: &str,
     prompt: &str,
     on_spawn: impl FnOnce(u32),
     mut on_activity: impl FnMut(&'static str, String),
 ) -> Result<Outcome, String> {
     let exe = std::env::current_exe().map_err(|e| format!("Couldn't find Engine's own path for the agent guard: {e}"))?;
+    let here = format!(
+        "{SYSTEM} Your working folder is {}: \"here\", \"this folder\" and \"the folder you're working in\" mean it.",
+        work.display()
+    );
     let system = match notes {
-        [] => SYSTEM.to_string(),
+        [] => here,
         [vault, rest @ ..] => {
             let more = if rest.is_empty() { String::new() } else { format!(" Other notes and documents: {}.", rest.join("; ")) };
             format!(
-                "{SYSTEM} The user's Obsidian vault is {vault}.{more} Search these when the task mentions their notes, \
+                "{here} The user's Obsidian vault is {vault}.{more} Search these when the task mentions their notes, \
                  subjects, syllabus or documents."
             )
         }
@@ -245,7 +251,7 @@ pub fn run(
     let mut cmd = Command::new("claude");
     cmd.current_dir(work)
         .args(["-p", "--no-session-persistence", "--verbose", "--output-format", "stream-json"])
-        .args(["--model", MODEL, "--append-system-prompt", &system, "--json-schema", SCHEMA])
+        .args(["--model", model, "--append-system-prompt", &system, "--json-schema", SCHEMA])
         // Unattended: every tool is allowed except the denied commands, and the guard hook refuses outward ones.
         .args(["--permission-mode", "bypassPermissions", "--permission-prompts", "none"])
         .args(["--disallowedTools", DENIED, "--settings", &settings(&exe, approved)]);

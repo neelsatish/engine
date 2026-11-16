@@ -43,6 +43,53 @@ pub fn ask(cwd: &Path, model: &str, system: &str, prompt: &str, schema: Option<&
     })
 }
 
+/// One thing agents can use: a claude.ai connector, a plugin's server, or a local MCP server.
+#[derive(Debug, PartialEq, serde::Serialize)]
+pub struct Connection {
+    pub name: String,
+    /// "connector", "plugin" or "local".
+    pub kind: String,
+    /// "connected", "needs auth" or "failed".
+    pub status: String,
+}
+
+/// Lists what Claude Code agents can connect to (`claude mcp list`, which also checks each one's health).
+pub fn connections(cwd: &Path) -> Result<Vec<Connection>, String> {
+    let mut cmd = Command::new("claude");
+    cmd.current_dir(cwd).args(["mcp", "list"]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let out = cmd.output().map_err(|e| format!("Couldn't run Claude Code ({e})."))?;
+    Ok(parse_connections(&String::from_utf8_lossy(&out.stdout)))
+}
+
+pub fn parse_connections(text: &str) -> Vec<Connection> {
+    text.lines()
+        .filter_map(|line| {
+            let (name, rest) = line.split_once(": ")?;
+            let (_, state) = rest.rsplit_once(" - ")?;
+            let status = if state.contains("Connected") {
+                "connected"
+            } else if state.to_lowercase().contains("auth") {
+                "needs auth"
+            } else {
+                "failed"
+            };
+            let (kind, name) = if let Some(n) = name.strip_prefix("claude.ai ") {
+                ("connector", n.to_string())
+            } else if let Some(n) = name.strip_prefix("plugin:") {
+                ("plugin", n.rsplit(':').next().unwrap_or(n).to_string())
+            } else {
+                ("local", name.to_string())
+            };
+            Some(Connection { name, kind: kind.into(), status: status.into() })
+        })
+        .collect()
+}
+
 /// Reads the `--output-format json` result line.
 fn parse(stdout: &str, structured: bool) -> Result<Value, String> {
     let line = stdout
@@ -64,6 +111,18 @@ fn parse(stdout: &str, structured: bool) -> Result<Value, String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn reads_connections() {
+        let text = "Checking MCP server health…\n\nclaude.ai Gmail: https://gmailmcp.googleapis.com/mcp/v1 - ✔ Connected\n\
+                    plugin:context7:context7: https://mcp.context7.com/mcp (HTTP) - ! Needs authentication\n\
+                    blender: uvx mcp-for-blender - ✗ Failed to connect\n";
+        let c = parse_connections(text);
+        assert_eq!(c.len(), 3);
+        assert_eq!(c[0], Connection { name: "Gmail".into(), kind: "connector".into(), status: "connected".into() });
+        assert_eq!((c[1].name.as_str(), c[1].status.as_str()), ("context7", "needs auth"));
+        assert_eq!((c[2].kind.as_str(), c[2].status.as_str()), ("local", "failed"));
+    }
 
     #[test]
     fn reads_results() {

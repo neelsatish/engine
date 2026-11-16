@@ -493,6 +493,7 @@
   .block.deadline { border-left-color: #f2b85c; background: rgb(242 184 92 / 0.16); }
   .block.recording { border-left-color: #5fd4a0; background: rgb(95 212 160 / 0.14); }
   .block.other { border-left-color: #9f9ab8; background: rgb(159 154 184 / 0.14); }
+  .block.reminder { border-left-color: #c9a8ff; background: rgb(201 168 255 / 0.16); }
 
   .kind-dot {
     width: 8px;
@@ -505,6 +506,7 @@
   .kind-dot.test { background: #f0718a; }
   .kind-dot.deadline { background: #f2b85c; }
   .kind-dot.recording { background: #5fd4a0; }
+  .kind-dot.reminder { background: #c9a8ff; }
 
   .agenda-item {
     display: flex;

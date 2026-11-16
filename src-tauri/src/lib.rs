@@ -1,6 +1,7 @@
 pub mod ai;
 pub mod jobs;
 pub mod launcher;
+pub mod quick;
 pub mod router;
 pub mod schedule;
 pub mod settings;
@@ -113,12 +114,49 @@ fn open_reply(app: &AppHandle, t: Target) -> Reply {
     reply
 }
 
+/// Runs a quick command (media, volume, YouTube, Spotify, web search, lock) and records it under Now.
+fn run_quick(app: &AppHandle, dump: Option<i64>, q: quick::Quick) -> Reply {
+    let engine = app.state::<Engine>();
+    let spotify_app = engine.apps(false).iter().any(|t| t.name.eq_ignore_ascii_case("spotify"));
+    let label = q.label();
+    let reply = match q.url(spotify_app) {
+        Some(url) => match launch(&engine, dump, &label, &Target { name: label.clone(), target: url }) {
+            Ok(()) => Reply::Opened { name: label },
+            Err(message) => Reply::Error { message },
+        },
+        None => {
+            let result = quick::press(&q);
+            let (status, text) = match &result {
+                Ok(()) => ("done", label.clone()),
+                Err(e) => ("failed", e.clone()),
+            };
+            log_err(engine.store().add_item(dump, "instant", &label, "", status, &text));
+            match result {
+                Ok(()) => Reply::Opened { name: label },
+                Err(message) => Reply::Error { message },
+            }
+        }
+    };
+    changed(app);
+    reply
+}
+
+/// Whether a dump talks about the clipboard, so its contents should go along.
+fn mentions_clipboard(text: &str) -> bool {
+    let t = text.to_lowercase();
+    ["clipboard", "what i copied", "i just copied", "i've copied", "the copied", "what i've copied"].iter().any(|w| t.contains(w))
+}
+
 fn handle_dump(app: &AppHandle, text: &str) -> Reply {
     let engine = app.state::<Engine>();
     let aliases = match engine.aliases() {
         Ok(a) => a,
         Err(reply) => return reply,
     };
+    // Fastest path: media, volume, YouTube, Spotify, web search, lock. No model.
+    if let Some(q) = quick::parse(text) {
+        return run_quick(app, None, q);
+    }
     // Fast path: a plain "open X" skips the model so it feels instant.
     if let Some(query) = launcher::parse_open(text) {
         match engine.find(&query, &aliases) {
@@ -135,7 +173,17 @@ fn handle_dump(app: &AppHandle, text: &str) -> Reply {
     };
     let shortcuts: Vec<String> = aliases.iter().map(|a| a.name.clone()).collect();
     let projects: Vec<String> = engine.settings().projects.into_iter().map(|p| p.name).collect();
-    let prompt = router::prompt(text, &shortcuts, &projects);
+    let now = engine.store().now().map(|n| n.1).unwrap_or_default();
+    let prompt = router::prompt(text, &shortcuts, &projects, &now);
+    // The clipboard goes straight to the answers and jobs that need it, rather than through the router.
+    let clip = mentions_clipboard(text)
+        .then(|| {
+            use tauri_plugin_clipboard_manager::ClipboardExt;
+            app.clipboard().read_text().ok()
+        })
+        .flatten()
+        .filter(|c| !c.trim().is_empty())
+        .map(|c| c.chars().take(20_000).collect::<String>());
     let items = match ai::ask(&engine.work_dir, router::MODEL, router::SYSTEM, &prompt, Some(router::SCHEMA))
         .and_then(router::parse)
     {
@@ -143,8 +191,12 @@ fn handle_dump(app: &AppHandle, text: &str) -> Reply {
         Err(message) => return Reply::Error { message },
     };
     let count = items.len();
-    for item in items {
-        start(app, &engine, dump, &aliases, item);
+    let folder = engine.settings().folder;
+    for mut item in items {
+        if let Some(clip) = clip.as_ref().filter(|_| matches!(item.kind, Kind::Answer | Kind::Job)) {
+            item.detail += &format!("\n\nThe person's clipboard contains:\n{clip}");
+        }
+        start(app, &engine, dump, &aliases, &folder, item);
     }
     pump(app);
     changed(app);
@@ -152,11 +204,29 @@ fn handle_dump(app: &AppHandle, text: &str) -> Reply {
 }
 
 /// Acts on one routed item: open it, answer it, or hold it in the briefing.
-fn start(app: &AppHandle, engine: &Engine, dump: i64, aliases: &[Target], item: router::Item) {
+fn start(app: &AppHandle, engine: &Engine, dump: i64, aliases: &[Target], folder: &str, item: router::Item) {
     let add = |status: &str, result: &str| {
         log_err(engine.store().add_item(Some(dump), item.kind.as_str(), &item.title, &item.detail, status, result))
     };
     match item.kind {
+        Kind::Instant if quick::parse(&item.detail).is_some() => {
+            run_quick(app, Some(dump), quick::parse(&item.detail).expect("checked above"));
+        }
+        Kind::Reminder => {
+            let Some(when) = item.when.clone().filter(|w| schedule::valid_time(&w.chars().take(16).collect::<String>())) else {
+                add("failed", "Couldn't work out when to remind you. Try \"remind me at 6pm to…\".");
+                return;
+            };
+            let when: String = when.chars().take(16).collect();
+            let end = engine.store().add_minutes(&when, 5).unwrap_or_else(|_| when.clone());
+            let block = schedule::Block { title: item.title.clone(), start: when.clone(), end, kind: "reminder".into(), ..Default::default() };
+            if log_err(engine.store().save_block(block)).is_some() {
+                let day = if engine.store().today_range().is_ok_and(|(from, _)| when.starts_with(&from[..10])) { "today" } else { &when[..10] };
+                let text = format!("Reminder set for {} {day}: {}", &when[11..], item.title);
+                log_err(engine.store().add_item(Some(dump), "instant", &item.title, "", "done", &text));
+                let _ = app.emit("schedule", ());
+            }
+        }
         Kind::Instant => {
             let site = item.url.clone().filter(|u| u.starts_with("https://") || u.starts_with("http://"));
             match (engine.find(&item.detail, aliases), site) {
@@ -182,7 +252,8 @@ fn start(app: &AppHandle, engine: &Engine, dump: i64, aliases: &[Target], item: 
                 let engine = app.state::<Engine>();
                 let today = engine.store().today().unwrap_or_default();
                 let system = router::answer_system(&today);
-                let reply = ai::ask(&engine.work_dir, router::ANSWER_MODEL, &system, &question, Some(router::ANSWER_SCHEMA));
+                let model = engine.settings().models.answer;
+                let reply = ai::ask(&engine.work_dir, &model, &system, &question, Some(router::ANSWER_SCHEMA));
                 let (status, result) = match reply {
                     Ok(out) => {
                         let (text, plan) = router::parse_answer(&out);
@@ -197,13 +268,14 @@ fn start(app: &AppHandle, engine: &Engine, dump: i64, aliases: &[Target], item: 
         }
         Kind::Job => {
             let project = item.project.as_deref().unwrap_or_default();
-            log_err(engine.store().add_job(Some(dump), &item.title, &item.detail, project, ""));
+            log_err(engine.store().add_job(Some(dump), &item.title, &item.detail, project, "", folder));
         }
         Kind::Outward => {
             // Nothing outward runs from a dump: an agent drafts it, and the draft comes back as an approval card.
             let project = item.project.as_deref().unwrap_or_default();
             let title = format!("Draft: {}", item.title);
-            log_err(engine.store().add_job(Some(dump), &title, &jobs::prepare_prompt(&item.detail), project, ""));
+            let prompt = jobs::prepare_prompt(&item.detail);
+            log_err(engine.store().add_job(Some(dump), &title, &prompt, project, "", folder));
         }
     }
 }
@@ -231,7 +303,11 @@ fn run_job(app: &AppHandle, job: store::Job) {
     let settings = engine.settings();
     // A job for a known project works in that project's folder; anything else gets its own folder.
     let project = settings.project(&job.project);
-    let work = project.map(|p| PathBuf::from(&p.folder)).filter(|f| f.is_dir()).unwrap_or_else(|| dir.clone());
+    // Where it works: the folder chosen in the dump box, else the project's folder, else its own job folder.
+    let work = Some(PathBuf::from(&job.folder))
+        .filter(|f| !job.folder.is_empty() && f.is_dir())
+        .or_else(|| project.map(|p| PathBuf::from(&p.folder)).filter(|f| f.is_dir()))
+        .unwrap_or_else(|| dir.clone());
     // Approved actions always go to Claude: the one-call guard and the user's connectors live there.
     let codex = job.tool.is_empty() && project.is_some_and(|p| p.runner == "codex");
     let notes = settings.knowledge_dirs();
@@ -249,7 +325,7 @@ fn run_job(app: &AppHandle, job: store::Job) {
         if codex {
             jobs::run_codex(&work, &dir, &job.prompt, on_spawn, on_activity)
         } else {
-            jobs::run(&work, &dir, &notes, approved, &job.prompt, on_spawn, on_activity)
+            jobs::run(&work, &dir, &notes, approved, &settings.models.agent, &job.prompt, on_spawn, on_activity)
         }
     });
     let report = match outcome {
@@ -265,10 +341,10 @@ fn run_job(app: &AppHandle, job: store::Job) {
             let saved = if work == dir && made > 0 { format!("\n\nSaved in {}", dir.display()) } else { String::new() };
             let summary = format!("{}{saved}", done.summary);
             for p in &done.proposed {
-                log_err(engine.store().add_held("outward", dump, &p.action, &p.details, &p.tool, &job.project));
+                log_err(engine.store().add_held("outward", dump, &p.action, &p.details, &p.tool, &job.project, &job.folder));
             }
             for t in &done.needs_you {
-                log_err(engine.store().add_held("task", dump, &t.task, &t.follow_up, "", &job.project));
+                log_err(engine.store().add_held("task", dump, &t.task, &t.follow_up, "", &job.project, &job.folder));
             }
             let added = add_plan(app, &job_title(&engine, id), &done.summary, done.schedule);
             let summary = if added > 0 { format!("{summary}\n\nAdded {added} blocks to your schedule.") } else { summary };
@@ -323,7 +399,7 @@ fn audit(app: &AppHandle, id: i64, task: &str, report: &str, opened: &[String]) 
     log_err(engine.store().set_verdict(id, "checking", ""));
     changed(app);
     let prompt = jobs::audit_prompt(task, report, opened);
-    let (verdict, reason) = ai::ask(&engine.work_dir, jobs::MODEL, jobs::AUDIT_SYSTEM, &prompt, Some(jobs::AUDIT_SCHEMA))
+    let (verdict, reason) = ai::ask(&engine.work_dir, jobs::AUDIT_MODEL, jobs::AUDIT_SYSTEM, &prompt, Some(jobs::AUDIT_SCHEMA))
         .ok()
         .and_then(|out| jobs::audit_verdict(&out))
         .unwrap_or_else(|| (String::new(), String::new())); // no verdict beats a wrong one
@@ -454,7 +530,7 @@ fn approve(id: i64, app: AppHandle) -> Result<(), String> {
     if let Some(h) = held.filter(|h| h.kind == "outward") {
         let tool = if h.tool.is_empty() { "*" } else { h.tool.as_str() };
         let prompt = jobs::approved_prompt(&h.title, &h.detail, &h.tool);
-        engine.store().add_job(h.dump, &h.title, &prompt, &h.project, tool).map_err(|e| e.to_string())?;
+        engine.store().add_job(h.dump, &h.title, &prompt, &h.project, tool, &h.folder).map_err(|e| e.to_string())?;
         pump(&app);
     }
     changed(&app);
@@ -469,7 +545,7 @@ fn revise(id: i64, note: String, app: AppHandle) -> Result<(), String> {
     if let Some(h) = held.filter(|h| h.kind == "outward") {
         let prompt = jobs::revise_prompt(&h.title, &h.detail, note.trim());
         let title = format!("Revise: {}", h.title);
-        engine.store().add_job(h.dump, &title, &prompt, &h.project, "").map_err(|e| e.to_string())?;
+        engine.store().add_job(h.dump, &title, &prompt, &h.project, "", &h.folder).map_err(|e| e.to_string())?;
         pump(&app);
     }
     changed(&app);
@@ -483,7 +559,7 @@ fn task_done(id: i64, app: AppHandle) -> Result<(), String> {
     let held = engine.store().take_held(id, "done").map_err(|e| e.to_string())?;
     if let Some(h) = held.filter(|h| h.kind == "task" && !h.detail.trim().is_empty()) {
         let prompt = format!("The user has done this: {}\n\nNow: {}", h.title, h.detail);
-        engine.store().add_job(h.dump, &h.detail, &prompt, &h.project, "").map_err(|e| e.to_string())?;
+        engine.store().add_job(h.dump, &h.detail, &prompt, &h.project, "", &h.folder).map_err(|e| e.to_string())?;
         pump(&app);
     }
     changed(&app);
@@ -508,7 +584,8 @@ fn review_day(app: AppHandle) -> Result<(), String> {
     std::thread::spawn(move || {
         let engine = app.state::<Engine>();
         let today = engine.store().today().unwrap_or_default();
-        let (status, text) = match ai::ask(&engine.work_dir, router::ANSWER_MODEL, &jobs::review_system(&today), &prompt, None) {
+        let model = engine.settings().models.answer;
+        let (status, text) = match ai::ask(&engine.work_dir, &model, &jobs::review_system(&today), &prompt, None) {
             Ok(reply) => ("done", reply.as_str().unwrap_or_default().trim().to_string()),
             Err(e) => ("failed", e),
         };
@@ -676,13 +753,28 @@ fn delete_block(id: i64, app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn connections(app: AppHandle) -> Result<Vec<ai::Connection>, String> {
+    tauri::async_runtime::spawn_blocking(move || ai::connections(&app.state::<Engine>().work_dir))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Opens claude.ai's connector settings, where Gmail, Drive and the rest are added.
+#[tauri::command]
+fn manage_connectors() -> Result<(), String> {
+    launcher::launch("https://claude.ai/settings/connectors").map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn get_settings(engine: State<Engine>) -> Result<settings::Settings, String> {
     settings::Settings::load(&engine.settings_path)
 }
 
 #[tauri::command]
-fn save_settings(settings: settings::Settings, engine: State<Engine>) -> Result<settings::Settings, String> {
-    settings.save(&engine.settings_path)
+fn save_settings(settings: settings::Settings, app: AppHandle) -> Result<settings::Settings, String> {
+    let saved = settings.save(&app.state::<Engine>().settings_path)?;
+    let _ = app.emit("settings", &saved); // keeps the dump box chips and the Settings view in step
+    Ok(saved)
 }
 
 #[tauri::command]
@@ -720,6 +812,8 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _, _| show(app)))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         // Started at sign-in with --autostart, Engine stays hidden in the tray.
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--autostart"])))
         .plugin(tauri_plugin_process::init())
@@ -760,6 +854,19 @@ pub fn run() {
                 recording: Mutex::default(),
                 helper: Mutex::default(),
                 speaking: Mutex::default(),
+            });
+
+            // Due reminders become Windows notifications.
+            let ticker = app.handle().clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_secs(15));
+                let engine = ticker.state::<Engine>();
+                let Ok((now, _)) = engine.store().now() else { continue };
+                for r in log_err(engine.store().take_due_reminders(&now)).unwrap_or_default() {
+                    use tauri_plugin_notification::NotificationExt;
+                    let _ = ticker.notification().builder().title("Engine reminder").body(&r.title).show();
+                    let _ = ticker.emit("schedule", ());
+                }
             });
 
             // Free the voice models after a few idle minutes, so Engine doesn't hold memory while unused.
@@ -844,6 +951,8 @@ pub fn run() {
             blocks,
             save_block,
             delete_block,
+            connections,
+            manage_connectors,
             get_settings,
             save_settings,
             edit_aliases

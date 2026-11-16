@@ -9,7 +9,14 @@
 
   type Project = { name: string; folder: string; runner: string };
   type Voice = { model: string; auto_submit: boolean; speak_on_summon: boolean; engine: string; clip: string };
-  type Settings = { projects: Project[]; knowledge: string[]; voice: Voice };
+  type Settings = {
+    projects: Project[];
+    knowledge: string[];
+    voice: Voice;
+    models: { agent: string; answer: string };
+    folder: string;
+    recent: string[];
+  };
   type VoiceStatus = { python: boolean; whisper: boolean; chatterbox: boolean; own_env: boolean };
 
   let { onEditAliases }: { onEditAliases: () => void } = $props();
@@ -18,8 +25,31 @@
     projects: [],
     knowledge: [],
     voice: { model: "small", auto_submit: false, speak_on_summon: false, engine: "windows", clip: "" },
+    models: { agent: "haiku", answer: "sonnet" },
+    folder: "",
+    recent: [],
   });
+  const MODEL_OPTIONS = [
+    ["haiku", "Haiku (fastest)"],
+    ["sonnet", "Sonnet (balanced)"],
+    ["opus", "Opus (most capable)"],
+    ["fable", "Fable (newest)"],
+  ];
   let status = $state<VoiceStatus | null>(null);
+  type Connection = { name: string; kind: string; status: string };
+  let conns = $state<Connection[] | null>(null);
+  let connError = $state("");
+
+  async function loadConnections() {
+    conns = null;
+    connError = "";
+    try {
+      conns = await invoke<Connection[]>("connections");
+    } catch (e) {
+      connError = String(e);
+      conns = [];
+    }
+  }
   let installing = $state(false);
   let installLine = $state("");
   let newName = $state("");
@@ -95,11 +125,15 @@
     autostart = await isEnabled().catch(() => false);
     version = await getVersion();
     status = await invoke<VoiceStatus>("voice_status").catch(() => null);
+    loadConnections();
   });
 
   onMount(() => {
-    const off = listen<string>("voice-install", (e) => (installLine = e.payload));
-    return () => off.then((f) => f());
+    const offs = [
+      listen<string>("voice-install", (e) => (installLine = e.payload)),
+      listen<Settings>("settings", (e) => (settings = e.payload)),
+    ];
+    return () => offs.forEach((off) => off.then((f) => f()));
   });
 </script>
 
@@ -177,6 +211,67 @@
       </ul>
     {/if}
     <div class="add"><button class="button" onclick={addNotes}>Add folder…</button></div>
+  </section>
+
+  <section class="card glass">
+    <h2>Connections {#if conns}<span class="count">{conns.length}</span>{/if}</h2>
+    <p class="hint">
+      What Claude agents can use: your claude.ai connectors (email, files, notes) and MCP servers. "Check my email" or
+      "find the deck in my Drive" just work. Anything outward, like sending, still waits for your approval.
+    </p>
+    {#if conns === null}
+      <p class="hint">Checking your connections…</p>
+    {:else}
+      <ul class="rows">
+        {#each conns as c (c.kind + c.name)}
+          <li>
+            <span class="conn-dot {c.status.replace(' ', '-')}" aria-hidden="true"></span>
+            <div class="body">
+              <span class="name">{c.name}</span>
+              <span class="path">{c.kind === "connector" ? "claude.ai connector" : c.kind === "plugin" ? "Plugin" : "Local MCP server"} · {c.status}</span>
+            </div>
+          </li>
+        {:else}
+          <li><span class="path">{connError || "No connections found."}</span></li>
+        {/each}
+      </ul>
+    {/if}
+    <p class="hint">
+      YouTube and Spotify: say "play lofi on Spotify" or "play cooking videos on YouTube" and Engine opens them, and
+      "pause", "next song" or "volume 30" control whatever is playing. For more, add a connector for them on claude.ai
+      when one is available.
+    </p>
+    <div class="add">
+      <button class="button" onclick={() => invoke("manage_connectors")}>Add connectors on claude.ai</button>
+      <button class="button" onclick={loadConnections} disabled={conns === null}>Check again</button>
+    </div>
+  </section>
+
+  <section class="card glass">
+    <h2>Models</h2>
+    <p class="hint">Which Claude model does the work, on your Claude plan. Sorting your dumps always uses Haiku, so it stays quick.</p>
+    <ul class="rows">
+      <li>
+        <div class="body">
+          <span class="name">Agents</span>
+          <span class="path">Background jobs. Also in the dump box, next to the folder.</span>
+        </div>
+        <select class="input" aria-label="Agent model" value={settings.models.agent}
+          onchange={(e) => save({ ...settings, models: { ...settings.models, agent: e.currentTarget.value } })}>
+          {#each MODEL_OPTIONS as [id, name] (id)}<option value={id}>{name}</option>{/each}
+        </select>
+      </li>
+      <li>
+        <div class="body">
+          <span class="name">Answers</span>
+          <span class="path">Quick answers, plans and the end-of-day review.</span>
+        </div>
+        <select class="input" aria-label="Answer model" value={settings.models.answer}
+          onchange={(e) => save({ ...settings, models: { ...settings.models, answer: e.currentTarget.value } })}>
+          {#each MODEL_OPTIONS as [id, name] (id)}<option value={id}>{name}</option>{/each}
+        </select>
+      </li>
+    </ul>
   </section>
 
   <section class="card glass">
@@ -317,6 +412,23 @@
 
   .rows > li {
     align-items: center;
+  }
+
+  .conn-dot {
+    width: 8px;
+    height: 8px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    background: var(--danger);
+  }
+
+  .conn-dot.connected {
+    background: var(--success);
+    box-shadow: 0 0 8px rgb(95 212 160 / 0.45);
+  }
+
+  .conn-dot.needs-auth {
+    background: #f2b85c;
   }
 
   select.input {

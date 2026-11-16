@@ -17,6 +17,17 @@ UI tokens: [design-system/engine/MASTER.md](design-system/engine/MASTER.md).
   - *outward* (send, post, upload, delete): an agent drafts it, and it comes back as an approval card.
 - The briefing has four sections: Now, Running, Needs you, Done. There is one briefing per day, and unfinished items
   carry over to the next day. Dismiss removes an item.
+- **Quick commands** run instantly, with no model involved:
+  - media keys: "pause", "next song", "previous";
+  - volume: "volume up", "volume 30", "mute";
+  - "play lofi on Spotify" and "play cooking videos on YouTube";
+  - "search the web for …" and "lock my pc".
+- **Reminders:** "remind me in 20 minutes to stretch" or "remind me at 6pm to call mum" shows a Windows notification
+  when it's due, and the reminder also appears in the Schedule.
+- **Clipboard:** dumps that mention what you copied ("summarize what I copied") get your clipboard text attached.
+- **Folder and model chips** in the dump box. Pick a folder, like choosing a working folder in Claude, and jobs from
+  your next dumps work there; recent folders are one click away. The model chip picks the agents' model: Haiku,
+  Sonnet, Opus or Fable.
 - `Ctrl+Shift+Space` shows or hides Engine from anywhere; `Esc` hides it. Closing the window hides it to the tray;
   quit from the tray icon's menu.
 
@@ -88,6 +99,9 @@ Only clone a voice you own or have permission to use.
 - **Notes:** folders agents may read, with your Obsidian vault first. Jobs that mention your notes, subjects or
   documents search them.
 - **Start with Windows:** Engine starts hidden in the tray when you sign in.
+- **Connections:** everything Claude agents can use (claude.ai connectors such as Gmail, Drive and Notion, plus MCP
+  servers), with each one's status and a button to add more on claude.ai.
+- **Models:** which Claude model the agents use, and which one writes answers. Sorting your dumps always uses Haiku.
 
 **Review my day** (next to Read aloud) writes a short end-of-day review: what got done, what's open, what looked
 doubtful, what tomorrow holds, and the first three things to do. It lands under Done.
