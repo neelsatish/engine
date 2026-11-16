@@ -17,21 +17,29 @@
 
 ### Color Palette
 
-Engine is dark-mode only. The generated light teal palette was replaced with these dark tokens (Swiss minimal,
-one warm "ignition" accent). Muted text is 7:1 on the background; the accent is about 6.7:1.
+Engine is dark-mode only, in the user's **Velvet Fold** palette (from their own Claude theme): matte black-violet
+surfaces, a periwinkle accent, and a lavender-to-blue-violet gradient for the logo, primary button and background
+rain. This palette is the user's choice and outranks any generated one.
 
 | Role | Hex | CSS Variable |
 |------|-----|--------------|
-| Background | `#0B0B0D` | `--bg` |
-| Surface (cards, input) | `#141417` | `--surface` |
-| Surface raised (hover) | `#1C1C21` | `--surface-2` |
-| Border | `#26262C` | `--border` |
-| Foreground | `#EDEDEF` | `--text` |
-| Muted foreground | `#9A9AA3` | `--text-muted` |
-| Accent / focus ring | `#F97316` | `--accent` |
-| On accent | `#0B0B0D` | `--on-accent` |
-| Success | `#22C55E` | `--success` |
-| Destructive | `#EF4444` | `--danger` |
+| Background | `#0E0C15` | `--bg` |
+| Surface (input, code) | `#13101C` | `--surface` |
+| Surface raised (hover) | `#1D192A` | `--surface-2` |
+| Glass panel over the rain | `rgb(19 16 28 / 0.74)` + 14px blur | `--glass` |
+| Border | `#2A2540` | `--border` |
+| Foreground | `#ECEAF6` | `--text` |
+| Secondary foreground | `#C7C3DC` | `--text-secondary` |
+| Muted foreground | `#9F9AB8` | `--text-muted` |
+| Accent / focus ring | `#8E90F5` | `--accent` |
+| Accent gradient | `#B9BBFF` to `#8F92EE` to `#6F7FC4` | `--accent-gradient` |
+| On accent | `#0E0C15` | `--on-accent` |
+| Success | `#5FD4A0` | `--success` |
+| Destructive | `#F0718A` | `--danger` |
+
+**Background rain:** an ASCII "matrix" of falling characters in the accent gradient, drawn on a canvas behind
+everything at low strength. Content sits on glass panels so text never sits directly on the rain. It runs at about
+20 fps only while Engine is visible and focused, and draws one still frame under reduced motion.
 
 ### Typography
 

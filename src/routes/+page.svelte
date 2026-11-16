@@ -7,6 +7,7 @@
   import { relaunch } from "@tauri-apps/plugin-process";
   import { check, type Update } from "@tauri-apps/plugin-updater";
   import { onMount } from "svelte";
+  import MatrixRain from "$lib/MatrixRain.svelte";
   import Orb, { type Process } from "$lib/Orb.svelte";
 
   type Target = { name: string; target: string };
@@ -34,6 +35,21 @@
   let updating = $state(false);
   let input: HTMLTextAreaElement;
 
+  const dateLabel = () => new Date().toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
+  let today = $state(dateLabel());
+
+  // Shown while the briefing is empty: one click puts an example in the dump box.
+  const EXAMPLES = [
+    "open spotify",
+    "make me a 5-day study plan for chemistry",
+    "research the best budget headphones and open the top pick",
+  ];
+
+  function tryExample(example: string) {
+    text = example;
+    input.focus();
+  }
+
   const now = $derived(items.filter((i) => i.kind === "instant"));
   const running = $derived(items.filter((i) => i.kind !== "instant" && (i.status === "running" || i.status === "queued")));
   const needsYou = $derived(items.filter((i) => i.kind !== "instant" && (i.status === "held" || i.status === "failed")));
@@ -48,6 +64,7 @@
   );
 
   async function load() {
+    today = dateLabel();
     try {
       items = await invoke<Item[]>("briefing");
     } catch (e) {
@@ -161,12 +178,14 @@
 
 <svelte:window onkeydown={onKey} />
 
+<MatrixRain />
+
 <main>
   <header data-tauri-drag-region>
     <div class="brand" data-tauri-drag-region>
-      <img class="mark" src="/logo.svg" alt="" width="20" height="20" />
-
-      <span data-tauri-drag-region>Engine</span>
+      <img class="mark" src="/logo.svg" alt="" width="22" height="22" />
+      <span class="name" data-tauri-drag-region>Engine</span>
+      <span class="date" data-tauri-drag-region>{today}</span>
     </div>
     <button class="icon" aria-label="Hide Engine" title="Hide (Esc)" onclick={() => getCurrentWindow().hide()}>
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14" /></svg>
@@ -181,7 +200,7 @@
     }}
   >
     <label for="dump">Dump</label>
-    <div class="field">
+    <div class="field glass">
       <textarea
         id="dump"
         bind:this={input}
@@ -191,7 +210,7 @@
         placeholder="Dump anything: open an app, ask for a plan, hand off a task."
         spellcheck="false"
       ></textarea>
-      <button class="send" type="submit" aria-label="Send" disabled={!text.trim()}>
+      <button class="send" type="submit" aria-label="Send" title="Send (Enter)" disabled={!text.trim()}>
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 10 4 15l5 5" /><path d="M20 4v7a4 4 0 0 1-4 4H4" /></svg>
       </button>
     </div>
@@ -205,11 +224,11 @@
   </form>
 
   {#if choices.length}
-    <section aria-label="Which one?">
+    <section class="card glass" aria-label="Which one?">
       <h2>Which one?</h2>
-      <div class="choices">
+      <div class="chips">
         {#each choices as c (c.target)}
-          <button class="choice" onclick={() => pick(c)}>{c.name}</button>
+          <button class="chip" onclick={() => pick(c)}>{c.name}</button>
         {/each}
       </div>
     </section>
@@ -217,8 +236,8 @@
 
   <div class="briefing" aria-live="polite">
     {#each sections as s (s.name)}
-      <section>
-        <h2>{s.name}</h2>
+      <section class="card glass">
+        <h2>{s.name} <span class="count">{s.items.length}</span></h2>
         <ul>
           {#each s.items as i (i.id)}
             {@const process = orbFor(i)}
@@ -257,7 +276,15 @@
         </ul>
       </section>
     {:else}
-      <p class="empty">Nothing yet today. Dump anything above.</p>
+      <section class="card glass empty">
+        <img src="/logo.svg" alt="" width="40" height="40" />
+        <p>Nothing yet today. Dump anything above, or try one:</p>
+        <div class="chips">
+          {#each EXAMPLES as example (example)}
+            <button class="chip" onclick={() => tryExample(example)}>{example}</button>
+          {/each}
+        </div>
+      </section>
     {/each}
   </div>
 
@@ -277,6 +304,8 @@
 
 <style>
   main {
+    position: relative;
+    z-index: 1;
     display: flex;
     flex-direction: column;
     height: 100vh;
@@ -284,25 +313,50 @@
     border: 1px solid var(--border);
   }
 
+  /* Panels over the rain: translucent and blurred, so text never sits on the moving characters. */
+  .glass {
+    background: var(--glass);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    backdrop-filter: blur(14px);
+  }
+
   header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    height: 48px;
+    height: 52px;
     flex-shrink: 0;
   }
 
   .brand {
     display: flex;
     align-items: center;
-    gap: var(--space-sm);
-    font-weight: 600;
-    letter-spacing: 0.01em;
+    gap: 10px;
+    min-width: 0;
   }
 
   .mark {
     display: block;
     pointer-events: none;
+  }
+
+  .name {
+    font-weight: 650;
+    letter-spacing: 0.01em;
+  }
+
+  .date {
+    overflow: hidden;
+    color: var(--text-muted);
+    font-size: 13px;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .date::before {
+    content: "·";
+    margin-right: 10px;
   }
 
   .icon {
@@ -334,7 +388,9 @@
 
   label,
   h2 {
-    display: block;
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
     margin: 0 0 var(--space-sm);
     font-size: 12px;
     font-weight: 600;
@@ -343,8 +399,19 @@
     color: var(--text-muted);
   }
 
+  .count {
+    min-width: 20px;
+    padding: 0 6px;
+    border-radius: 999px;
+    background: var(--surface-2);
+    color: var(--text-secondary);
+    font-size: 11px;
+    letter-spacing: 0;
+    text-align: center;
+  }
+
   .dump {
-    margin: var(--space-sm) 0 var(--space-md);
+    margin: var(--space-xs) 0 var(--space-sm);
   }
 
   .field {
@@ -352,14 +419,13 @@
     align-items: flex-end;
     gap: var(--space-sm);
     padding: var(--space-md);
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    transition: border-color var(--ease);
+    border-radius: 14px;
+    transition: border-color var(--ease), box-shadow var(--ease);
   }
 
   .field:focus-within {
     border-color: var(--accent);
+    box-shadow: 0 0 0 4px var(--accent-glow);
   }
 
   textarea {
@@ -382,22 +448,28 @@
   .send {
     display: grid;
     place-items: center;
-    width: 36px;
-    height: 36px;
+    width: 38px;
+    height: 38px;
     flex-shrink: 0;
     border: 0;
-    border-radius: 10px;
-    background: var(--accent);
+    border-radius: 11px;
+    background: var(--accent-gradient);
     color: var(--on-accent);
-    transition: opacity var(--ease), transform var(--ease);
+    box-shadow: 0 4px 16px var(--accent-glow);
+    transition: opacity var(--ease), transform var(--ease), filter var(--ease);
   }
 
-  .send:active {
+  .send:hover:not(:disabled) {
+    filter: brightness(1.08);
+  }
+
+  .send:active:not(:disabled) {
     transform: scale(0.96);
   }
 
   .send:disabled {
     opacity: 0.35;
+    box-shadow: none;
     cursor: default;
   }
 
@@ -412,8 +484,9 @@
     user-select: text;
   }
 
-  section {
-    margin-bottom: var(--space-lg);
+  .card {
+    padding: 14px var(--space-md) 4px;
+    margin-bottom: var(--space-md);
   }
 
   .briefing {
@@ -424,23 +497,49 @@
     scrollbar-color: var(--border) transparent;
   }
 
-  .choices {
+  .chips {
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-sm);
+    padding-bottom: 10px;
   }
 
-  .choice {
-    padding: var(--space-sm) var(--space-md);
-    background: var(--surface);
+  .chip {
+    padding: 6px 14px;
+    background: rgb(29 25 42 / 0.8);
     border: 1px solid var(--border);
     border-radius: 999px;
-    transition: background var(--ease), border-color var(--ease);
+    color: var(--text-secondary);
+    font-size: 13px;
+    transition: background var(--ease), border-color var(--ease), color var(--ease);
   }
 
-  .choice:hover {
-    background: var(--surface-2);
+  .chip:hover {
     border-color: var(--accent);
+    color: var(--text);
+  }
+
+  .empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-lg) var(--space-md);
+    text-align: center;
+  }
+
+  .empty img {
+    opacity: 0.85;
+  }
+
+  .empty p {
+    margin: 0 0 var(--space-xs);
+    color: var(--text-secondary);
+  }
+
+  .empty .chips {
+    justify-content: center;
+    padding: 0;
   }
 
   ul {
@@ -454,7 +553,11 @@
     align-items: baseline;
     gap: var(--space-md);
     padding: 10px 0;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid rgb(42 37 64 / 0.6);
+  }
+
+  li:last-child {
+    border-bottom: 0;
   }
 
   /* One line tall, so dots and orbs sit centred on an item's first line. */
@@ -476,9 +579,11 @@
 
   .dot.ok {
     background: var(--success);
+    box-shadow: 0 0 8px rgb(95 212 160 / 0.45);
   }
   .dot.warn {
     background: var(--danger);
+    box-shadow: 0 0 8px rgb(240 113 138 / 0.45);
   }
 
   .body {
@@ -503,15 +608,16 @@
   }
 
   summary::marker {
-    color: var(--text-muted);
+    color: var(--accent);
   }
 
   pre {
-    margin: var(--space-sm) 0 0;
+    margin: var(--space-sm) 0 var(--space-xs);
     padding: var(--space-md);
-    background: var(--surface);
+    background: rgb(14 12 21 / 0.7);
     border: 1px solid var(--border);
-    border-radius: var(--radius);
+    border-radius: 10px;
+    color: var(--text-secondary);
     font: inherit;
     font-size: 14px;
     white-space: pre-wrap;
@@ -519,14 +625,10 @@
     user-select: text;
   }
 
-  time,
-  .empty {
+  time {
     color: var(--text-muted);
     font-size: 13px;
-  }
-
-  .empty {
-    margin: 0;
+    font-variant-numeric: tabular-nums;
   }
 
   footer {

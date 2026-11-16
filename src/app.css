@@ -1,15 +1,20 @@
 /* Tokens: design-system/engine/MASTER.md */
 :root {
-  --bg: #0b0b0d;
-  --surface: #141417;
-  --surface-2: #1c1c21;
-  --border: #26262c;
-  --text: #ededef;
-  --text-muted: #9a9aa3;
-  --accent: #f97316;
-  --on-accent: #0b0b0d;
-  --success: #22c55e;
-  --danger: #ef4444;
+  /* Velvet Fold: matte black-violet surfaces and a periwinkle accent, after the user's own Claude theme. */
+  --bg: #0e0c15;
+  --surface: #13101c;
+  --surface-2: #1d192a;
+  --glass: rgb(19 16 28 / 0.74);
+  --border: #2a2540;
+  --text: #eceaf6;
+  --text-secondary: #c7c3dc;
+  --text-muted: #9f9ab8;
+  --accent: #8e90f5;
+  --accent-gradient: linear-gradient(135deg, #b9bbff, #8f92ee 55%, #6f7fc4);
+  --accent-glow: rgb(142 144 245 / 0.22);
+  --on-accent: #0e0c15;
+  --success: #5fd4a0;
+  --danger: #f0718a;
 
   --space-xs: 4px;
   --space-sm: 8px;

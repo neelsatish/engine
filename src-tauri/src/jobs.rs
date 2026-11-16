@@ -1,4 +1,7 @@
 //! Background jobs. Each runs as a headless Claude Code agent on Haiku, in its own folder, draft-only.
+//!
+//! Agents get the user's own Claude Code setup: CLAUDE.md, skills, plugins, MCP servers and claude.ai connectors.
+//! Outward connector tools (send, post, share, delete...) are refused by a PreToolUse hook that runs `engine --guard`.
 
 use serde_json::Value;
 use std::{
@@ -13,18 +16,74 @@ pub const MODEL: &str = "haiku";
 pub const MAX_RUNNING: usize = 3;
 
 const SYSTEM: &str = "You are a background agent working for Engine, the user's desktop assistant. Work on your own: \
-never ask the user questions; make sensible assumptions and say what they were. You are draft-only: never send, reply \
-to, post, upload or publish anything, never pay for anything, never git push, and never delete files outside the \
-current folder. If the task needs one of those, prepare it and say it is ready for the user's approval. Save anything \
+never ask the user questions or wait for approval; make sensible assumptions and say what they were. You have the \
+user's skills, connectors (such as Gmail, Google Drive, Notion, Canva, Microsoft 365) and MCP tools: use them when \
+they help. You are draft-only: never send, reply to, forward, post, upload, share or publish anything, never pay for \
+anything, never git push, and never delete anything outside the current folder. Creating drafts (email drafts, new \
+documents, new pages) is fine. If the task needs an outward step, prepare it and say it is ready for the user's \
+approval; Engine refuses outward tools anyway. Save anything \
 you make as files in the current folder. When you finish, return a summary of what you did and found (short, plain \
 text, \"- \" bullets, no markdown headings) and an open list of things the user should see now: website URLs, app \
 names, or paths of files you made. Leave open empty when nothing needs opening.";
 
 const SCHEMA: &str = r#"{"type":"object","properties":{"summary":{"type":"string"},"open":{"type":"array","items":{"type":"string"}}},"required":["summary","open"]}"#;
 
-const ALLOWED: &str = "Read Glob Grep Edit Write WebSearch WebFetch Bash PowerShell TodoWrite";
-/// Outward tools Engine knows about. Best effort: an arbitrary script could still reach the network.
+/// Outward shell commands Engine knows about. Best effort: an arbitrary script could still reach the network.
 const DENIED: &str = "Bash(git push:*) Bash(gh:*) Bash(curl -X POST:*) PowerShell(git push:*) PowerShell(gh:*)";
+
+/// Settings layered over the user's own for agent runs: the outward-tool guard, and superpowers off, because its
+/// brainstorming gate waits for a human to approve a design and a background agent has nobody to ask.
+fn settings(engine_exe: &Path) -> String {
+    let guard = format!("\"{}\" --guard", engine_exe.to_string_lossy().replace('\\', "/"));
+    serde_json::json!({
+        "hooks": {"PreToolUse": [{"matcher": "mcp__.*", "hooks": [{"type": "command", "command": guard}]}]},
+        "enabledPlugins": {"superpowers@claude-plugins-official": false}
+    })
+    .to_string()
+}
+
+/// Whether an MCP tool acts outward: others would see it, or it can't be undone. Matched on whole words of the
+/// tool's own name, so `list-comments`, `sharepoint_search` and `create_reply_draft` stay allowed.
+pub fn outward(tool: &str) -> bool {
+    let Some((_, name)) = tool.strip_prefix("mcp__").and_then(|t| t.split_once("__")) else { return false };
+    let name = name.to_lowercase();
+    let words: Vec<&str> = name.split(['_', '-']).filter(|w| !w.is_empty()).collect();
+    let has = |list: &[&str]| words.iter().any(|w| list.contains(w));
+    let service = ["outlook", "sharepoint", "notion", "nvapp", "client", "batch"];
+    let first = words.iter().copied().find(|w| !service.contains(w));
+
+    if matches!(first, Some("list" | "get" | "search" | "read" | "fetch" | "query" | "show" | "view" | "download")) {
+        return false;
+    }
+    let destroys = has(&["send", "delete", "trash", "untrash"]);
+    if has(&["draft"]) && !destroys {
+        return false; // drafts are the point of draft-only
+    }
+    let changes_event = has(&["event", "events"]) && has(&["create", "update", "cancel", "delete", "respond"]);
+    changes_event
+        || destroys
+        || has(&[
+            "reply", "forward", "post", "publish", "upload", "share", "invite", "comment", "respond", "cancel", "spam",
+            "move", "rename", "merge", "resolve", "resolved", "set", "pay", "purchase",
+        ])
+}
+
+/// `engine --guard`: a Claude Code PreToolUse hook. Reads the hook's JSON on stdin; exit code 2 refuses the tool.
+pub fn guard() -> i32 {
+    let mut input = String::new();
+    let _ = std::io::stdin().read_to_string(&mut input);
+    let tool = serde_json::from_str::<Value>(&input).ok().and_then(|v| v["tool_name"].as_str().map(str::to_string));
+    match tool {
+        Some(tool) if outward(&tool) => {
+            eprintln!(
+                "Engine blocked {tool}: background agents are draft-only. Prepare it instead (a draft, a file, the \
+                 exact text) and say it is ready for the user's approval."
+            );
+            2
+        }
+        _ => 0,
+    }
+}
 
 #[derive(Debug, PartialEq)]
 pub struct Outcome {
@@ -40,12 +99,14 @@ pub fn run(
     on_spawn: impl FnOnce(u32),
     mut on_activity: impl FnMut(&'static str, String),
 ) -> Result<Outcome, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("Couldn't find Engine's own path for the agent guard: {e}"))?;
     let mut cmd = Command::new("claude");
     cmd.current_dir(dir)
-        .args(["-p", "--safe-mode", "--no-session-persistence", "--verbose", "--output-format", "stream-json"])
+        .args(["-p", "--no-session-persistence", "--verbose", "--output-format", "stream-json"])
         .args(["--model", MODEL, "--append-system-prompt", SYSTEM, "--json-schema", SCHEMA])
-        .args(["--permission-mode", "acceptEdits", "--permission-prompts", "none"])
-        .args(["--allowedTools", ALLOWED, "--disallowedTools", DENIED])
+        // Unattended: every tool is allowed except the denied commands, and the guard hook refuses outward ones.
+        .args(["--permission-mode", "bypassPermissions", "--permission-prompts", "none"])
+        .args(["--disallowedTools", DENIED, "--settings", &settings(&exe)])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -141,6 +202,13 @@ fn tool(name: &str, input: &Value) -> (&'static str, String) {
         }),
         "TodoWrite" => ("thinking", "Planning".into()),
         "StructuredOutput" => ("writing", "Writing up".into()),
+        "Skill" => ("thinking", format!("Using the {} skill", text("skill"))),
+        other if other.starts_with("mcp__") => {
+            let mut parts = other.trim_start_matches("mcp__").splitn(2, "__");
+            let server = parts.next().unwrap_or_default().trim_start_matches("claude_ai_").replace('_', " ");
+            let action = parts.next().unwrap_or_default().replace(['_', '-'], " ");
+            ("working", short(&format!("{server}: {action}")))
+        }
         other => ("working", format!("Using {other}")),
     }
 }
@@ -195,6 +263,61 @@ mod tests {
         assert_eq!(outcome(&done), Ok(Outcome { summary: "Did it.".into(), open: vec!["https://a.com".into()] }));
         let failed = json!({"type": "result", "is_error": true, "result": "Not logged in"});
         assert_eq!(outcome(&failed), Err("Not logged in".into()));
+    }
+
+    #[test]
+    fn guards_outward_tools() {
+        let blocked = [
+            "mcp__claude_ai_Gmail__send_message",
+            "mcp__claude_ai_Gmail__reply",
+            "mcp__claude_ai_Gmail__forward",
+            "mcp__claude_ai_Gmail__trash_thread",
+            "mcp__claude_ai_Gmail__mark_message_spam",
+            "mcp__claude_ai_Gmail__delete_draft",
+            "mcp__claude_ai_Google_Drive__share_file",
+            "mcp__claude_ai_Microsoft_365__outlook_send_draft",
+            "mcp__claude_ai_Microsoft_365__outlook_create_event",
+            "mcp__claude_ai_Microsoft_365__outlook_batch_delete_messages",
+            "mcp__claude_ai_Microsoft_365__sharepoint_upload_file",
+            "mcp__claude_ai_Notion__notion-create-comment",
+            "mcp__claude_ai_Notion__notion-calendar-create-events",
+            "mcp__claude_ai_Notion__notion-delete-pages",
+            "mcp__claude_ai_Canva__publish-brand-template",
+            "mcp__Roblox_Studio__upload_image",
+            "mcp__nvidia-app__nvapp_client_set_laptop_feature",
+        ];
+        let allowed = [
+            "mcp__claude_ai_Gmail__create_draft",
+            "mcp__claude_ai_Gmail__update_draft",
+            "mcp__claude_ai_Gmail__search_threads",
+            "mcp__claude_ai_Gmail__list_labels",
+            "mcp__claude_ai_Microsoft_365__outlook_create_reply_draft",
+            "mcp__claude_ai_Microsoft_365__sharepoint_search",
+            "mcp__claude_ai_Microsoft_365__sharepoint_folder_search",
+            "mcp__claude_ai_Google_Drive__list_shared_drives",
+            "mcp__claude_ai_Google_Drive__create_file",
+            "mcp__claude_ai_Notion__notion-create-pages",
+            "mcp__claude_ai_Notion__notion-get-comments",
+            "mcp__claude_ai_Canva__list-comments",
+            "mcp__claude_ai_Canva__generate-design",
+            "mcp__claude_ai_Canva__remove-background",
+            "mcp__Roblox_Studio__script_read",
+            "Bash",
+        ];
+        for t in blocked {
+            assert!(outward(t), "should block {t}");
+        }
+        for t in allowed {
+            assert!(!outward(t), "should allow {t}");
+        }
+    }
+
+    #[test]
+    fn guard_settings_are_valid_json() {
+        let s: Value = serde_json::from_str(&settings(Path::new("C:\\Users\\x\\engine.exe"))).unwrap();
+        let cmd = s["hooks"]["PreToolUse"][0]["hooks"][0]["command"].as_str().unwrap();
+        assert_eq!(cmd, "\"C:/Users/x/engine.exe\" --guard");
+        assert_eq!(s["enabledPlugins"]["superpowers@claude-plugins-official"], false);
     }
 
     #[test]

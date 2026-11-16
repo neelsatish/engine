@@ -25,8 +25,14 @@ it searches and reads the web, reads and writes files, and runs commands. Runnin
 with an orb for the kind of step (thinking, viewing, searching, writing, working). When it finishes, its summary
 goes under Done and Engine opens anything it asked for: a website, an app or alias, or a file it made.
 
-Agents are draft-only. They're told never to send, post, upload, pay or `git push`, and Engine blocks the outward
-commands it knows about (`git push`, `gh`). That's best effort, not a sandbox. Each job gets its own folder under
+Agents get your own Claude Code setup: your CLAUDE.md, skills, plugins, MCP servers and claude.ai connectors (Gmail,
+Google Drive, Notion and so on). The one exception is superpowers, which is turned off for agents because its
+brainstorming step waits for a person to approve a design, and a background agent has nobody to ask.
+
+Agents are draft-only. Before every connector call, Claude Code runs `engine --guard`, which refuses outward tools:
+sending, replying, forwarding, posting, uploading, sharing, deleting, calendar invites and similar. Drafts and new
+documents are allowed. The outward shell commands Engine knows about (`git push`, `gh`) are blocked too. That's best
+effort, not a sandbox: an arbitrary script could still reach the network. Each job gets its own folder under
 `%APPDATA%\com.engine.desktop\jobs\`, with the agent's full log in `agent-log.jsonl`. Cancel stops a running agent
 and everything it started; Retry re-runs a failed job.
 - `Ctrl+Shift+Space` shows or hides Engine from anywhere; `Esc` hides it.
