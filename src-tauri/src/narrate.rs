@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 pub enum Line {
     Word(&'static str),
     Overview(String),
+    /// A short phrase the person asked for ("Writing to you now"): never paced away or muted.
+    Cue(&'static str),
 }
 
 /// Every short phrase Engine says, recorded once in the British voice so each plays instantly.

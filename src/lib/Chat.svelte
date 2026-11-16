@@ -22,8 +22,9 @@
     if (agents.length > 1) return { kind: "work", text: `${agents.length} agents working` };
     return null;
   });
+  const hudKind = $derived(hud?.kind ?? ""); // the timer restarts only when the kind of work changes
   $effect(() => {
-    if (!hud) return;
+    if (!hudKind) return;
     since = Date.now();
     const t = setInterval(() => (frame = (frame + 1) % SPIN.length), 90);
     return () => clearInterval(t);
@@ -140,6 +141,17 @@
     }
   }
 
+  // The folder menu closes on Esc or a click anywhere else.
+  function onWindowKey(e: KeyboardEvent) {
+    if (e.key === "Escape" && folderMenu) {
+      folderMenu = false;
+      e.preventDefault();
+    }
+  }
+  function onWindowClick(e: MouseEvent) {
+    if (folderMenu && !(e.target as HTMLElement).closest(".menu-wrap")) folderMenu = false;
+  }
+
   function onInputKey(e: KeyboardEvent) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -175,6 +187,8 @@
   const toggle = (id: number) => (expanded = expanded.includes(id) ? expanded.filter((e) => e !== id) : [...expanded, id]);
   const stepOrb = (i: Item): Process => (i.status === "queued" ? "waiting" : ((i.process || "working") as Process));
 </script>
+
+<svelte:window onkeydown={onWindowKey} onclick={onWindowClick} />
 
 {#snippet reply(i: Item)}
   {@const all = lines(i.result)}

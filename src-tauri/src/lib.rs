@@ -308,7 +308,7 @@ impl Voice {
     fn answer(self, text: &str) {
         match self {
             Voice::Speak => tell(narrate::Line::Overview(narrate::overview(text))),
-            Voice::Cue => tell(narrate::Line::Word("Writing to you now")),
+            Voice::Cue => tell(narrate::Line::Cue("Writing to you now")),
             Voice::Quiet => {}
         }
     }
@@ -1035,6 +1035,8 @@ fn wake_loop(app: &AppHandle) {
         let audio: Vec<f32> = rec.since(from).into_iter().take(to - from).collect();
         rec.clear();
         gate.reset();
+        // While Engine is talking, the mic hears Engine too: a burst then only counts as "Engine, stop".
+        let over_speech = voice::PLAYING.load(std::sync::atomic::Ordering::Relaxed);
         if following {
             voice_event(app, "transcribing", "");
         }
@@ -1042,6 +1044,19 @@ fn wake_loop(app: &AppHandle) {
         let heard = voice::write_wav(&wav, &audio, rec.rate).and_then(|()| engine.with_helper(|h| h.transcribe(&wav, &model)));
         let _ = fs::remove_file(&wav); // the words are used, the recording isn't kept
         let heard = heard.unwrap_or_default();
+        if over_speech {
+            // Never a request (it may be Engine's own words), never a follow-up: only an interruption.
+            if let Some(rest) = wake::command(&heard) {
+                if rest.is_empty() || quick::hush(&rest) || quick::stop_all(&rest) {
+                    ptt::log("wake: interrupted");
+                    stop_speech(&engine);
+                    if quick::stop_all(&rest) {
+                        act_on(app, &rest);
+                    }
+                }
+            }
+            continue;
+        }
         if following {
             // After "Yes sir?", pieces split by a pause ("open…" "Opera") are joined until the request is whole.
             let piece = wake::command(&heard).unwrap_or(heard); // "Engine" said again is fine too
@@ -1223,10 +1238,19 @@ fn narrator(app: AppHandle, lines: std::sync::mpsc::Receiver<narrate::Line>) {
         // "Talk me through tasks" off silences the progress words only: answers asked for aloud and reminders
         // are still said.
         if !engine.settings().voice.narrate {
-            batch.retain(|l| matches!(l, Line::Overview(_)));
+            batch.retain(|l| !matches!(l, Line::Word(_)));
             if batch.is_empty() {
                 continue;
             }
+        }
+        // Cues first, unpaced: they were asked for.
+        for cue in batch.iter().filter_map(|l| if let Line::Cue(c) = l { Some(*c) } else { None }) {
+            say_short(&engine, cue);
+            pacer.spoke(Instant::now());
+        }
+        batch.retain(|l| !matches!(l, Line::Cue(_)));
+        if batch.is_empty() {
+            continue;
         }
         // Wait while the person is talking to Engine (up to a minute), then say what's still worth saying.
         for _ in 0..300 {
