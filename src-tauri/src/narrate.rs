@@ -11,7 +11,8 @@ pub enum Line {
 }
 
 /// Every short phrase Engine says, recorded once in the British voice so each plays instantly.
-pub const PHRASES: [&str; 8] = ["Yes sir?", "On it", "Writing", "Reading", "Searching", "Sending", "Working on it", "Almost done"];
+pub const PHRASES: [&str; 9] =
+    ["Yes sir?", "On it", "Writing", "Reading", "Searching", "Sending", "Working on it", "Almost done", "Writing to you now"];
 
 /// The word for an agent's step, from its orb process and label (see `jobs::activity`). `None` for steps too
 /// small to mention.

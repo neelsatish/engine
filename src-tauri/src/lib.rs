@@ -176,6 +176,19 @@ fn handle_dump(app: &AppHandle, text: &str) -> Reply {
     if quick::stop_all(text) {
         return stop_all(app, dump);
     }
+    if quick::clear_briefing(text) {
+        let n = log_err(engine.store().clear_briefing()).unwrap_or(0);
+        let done = format!("Cleared {n} item{} from the briefing", if n == 1 { "" } else { "s" });
+        log_err(engine.store().add_item(Some(dump), "instant", "Clear the briefing", "", "done", &done));
+        changed(app);
+        return Reply::Opened { name: done };
+    }
+    // "Close X" first: "close the open file" mustn't reach the open fast path below.
+    if let Some(query) = launcher::parse_close(text) {
+        if let Some(t) = resolve_one(&engine, &query, &aliases) {
+            return close_reply(app, Some(dump), &t);
+        }
+    }
     // Fastest path: media, volume, YouTube, Spotify, web search, lock. No model.
     if let Some(q) = quick::parse(text) {
         return run_quick(app, Some(dump), q);
@@ -223,19 +236,76 @@ fn handle_dump(app: &AppHandle, text: &str) -> Reply {
     };
     let count = items.len();
     let folder = engine.settings().folder;
+    let voice = Voice::for_dump(text);
     for mut item in items {
         if let Some(clip) = clip.as_ref().filter(|_| matches!(item.kind, Kind::Answer | Kind::Job)) {
             item.detail += &format!("\n\nThe person's clipboard contains:\n{clip}");
         }
-        start(app, &engine, dump, &aliases, &folder, item);
+        start(app, &engine, dump, &aliases, &folder, item, voice);
     }
     pump(app);
     changed(app);
     Reply::Routed { count }
 }
 
+/// How much Engine says out loud about a request.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Voice {
+    /// "Tell me…", "could you tell me…", "just say…": the answer is spoken, and agents talk through their work.
+    Speak,
+    /// A question asked without that: a short "Writing to you now", and the answer only in the chat.
+    Cue,
+    /// Anything else: silent.
+    Quiet,
+}
+
+impl Voice {
+    fn for_dump(text: &str) -> Voice {
+        let t = text.trim().to_lowercase();
+        let starts = |w: &[&str]| w.iter().any(|p| t.starts_with(p));
+        if ["tell me", "just say", "say it", "read it to me", "read me"].iter().any(|p| t.contains(p)) {
+            Voice::Speak
+        } else if t.ends_with('?')
+            || starts(&["what", "who", "why", "how", "when", "where", "which", "is ", "are ", "can ", "could ", "do ", "does ", "should "])
+        {
+            Voice::Cue
+        } else {
+            Voice::Quiet
+        }
+    }
+
+    /// Says an answer as this request wants: in full, as a cue, or not at all.
+    fn answer(self, text: &str) {
+        match self {
+            Voice::Speak => tell(narrate::Line::Overview(narrate::overview(text))),
+            Voice::Cue => tell(narrate::Line::Word("Writing to you now")),
+            Voice::Quiet => {}
+        }
+    }
+}
+
+/// One app or shortcut for `query`, the way "open X" picks it.
+fn resolve_one(engine: &Engine, query: &str, aliases: &[Target]) -> Option<Target> {
+    match engine.find(query, aliases) {
+        Match::One(t) => Some(t),
+        _ => None,
+    }
+}
+
+/// Closes an app and records it in the chat.
+fn close_reply(app: &AppHandle, dump: Option<i64>, t: &Target) -> Reply {
+    let engine = app.state::<Engine>();
+    let (status, text) = match launcher::close(t) {
+        Ok(m) => ("done", m),
+        Err(e) => ("failed", e),
+    };
+    log_err(engine.store().add_item(dump, "instant", &format!("Close {}", t.name), "", status, &text));
+    changed(app);
+    if status == "done" { Reply::Opened { name: text } } else { Reply::Error { message: text } }
+}
+
 /// Acts on one routed item: open it, answer it, or hold it in the briefing.
-fn start(app: &AppHandle, engine: &Engine, dump: i64, aliases: &[Target], folder: &str, item: router::Item) {
+fn start(app: &AppHandle, engine: &Engine, dump: i64, aliases: &[Target], folder: &str, item: router::Item, voice: Voice) {
     let add = |status: &str, result: &str| {
         log_err(engine.store().add_item(Some(dump), item.kind.as_str(), &item.title, &item.detail, status, result))
     };
@@ -256,6 +326,16 @@ fn start(app: &AppHandle, engine: &Engine, dump: i64, aliases: &[Target], folder
                 let text = format!("Reminder set for {} {day}: {}", &when[11..], item.title);
                 log_err(engine.store().add_item(Some(dump), "instant", &item.title, "", "done", &text));
                 let _ = app.emit("schedule", ());
+            }
+        }
+        Kind::Instant if launcher::parse_close(&item.title).is_some() => {
+            match resolve_one(engine, &item.detail, aliases) {
+                Some(t) => {
+                    close_reply(app, Some(dump), &t);
+                }
+                None => {
+                    add("failed", &format!("Couldn't find “{}” to close.", item.detail));
+                }
             }
         }
         Kind::Instant => {
@@ -280,11 +360,14 @@ fn start(app: &AppHandle, engine: &Engine, dump: i64, aliases: &[Target], folder
         Kind::Answer if item.reply.as_deref().is_some_and(|r| !r.trim().is_empty()) => {
             let reply = item.reply.clone().unwrap_or_default().trim().to_string();
             add("done", &reply);
-            tell(narrate::Line::Overview(narrate::overview(&reply)));
+            voice.answer(&reply);
         }
         Kind::Answer => {
             let Some(id) = add("running", "") else { return };
             let (app, question, title) = (app.clone(), item.detail.clone(), item.title.clone());
+            if voice == Voice::Cue {
+                voice.answer(""); // the cue now, while the answer is written
+            }
             std::thread::spawn(move || {
                 let engine = app.state::<Engine>();
                 let today = engine.store().today().unwrap_or_default();
@@ -295,7 +378,9 @@ fn start(app: &AppHandle, engine: &Engine, dump: i64, aliases: &[Target], folder
                 let (status, result) = match reply {
                     Ok(out) => {
                         let (text, plan) = router::parse_answer(&out);
-                        tell(narrate::Line::Overview(narrate::overview(&text)));
+                        if voice == Voice::Speak {
+                            voice.answer(&text);
+                        }
                         let added = add_plan(&app, &title, &text, plan);
                         ("done", if added > 0 { format!("{text}\n\nAdded {added} blocks to your schedule.") } else { text })
                     }
@@ -354,12 +439,16 @@ fn run_job(app: &AppHandle, job: store::Job) {
     let marker = dir.join("approved.once");
     let approved = (!job.tool.is_empty()).then(|| (job.tool.as_str(), marker.as_path()));
     changed(app);
-    tell(narrate::Line::Word("On it"));
+    // Agents talk through their work only when asked to ("tell me…").
+    let talk = dump.is_some_and(|d| Voice::for_dump(&engine.store().dump_text(d).unwrap_or_default()) == Voice::Speak);
+    if talk {
+        tell(narrate::Line::Word("On it"));
+    }
     let on_spawn = |pid| {
         engine.jobs.lock().unwrap().insert(id, pid);
     };
     let on_activity = |process: &'static str, label: String| {
-        if let Some(word) = narrate::word(process, &label) {
+        if let Some(word) = narrate::word(process, &label).filter(|_| talk) {
             tell(narrate::Line::Word(word));
         }
         log_err(engine.store().set_activity(id, process, &label));
@@ -371,7 +460,8 @@ fn run_job(app: &AppHandle, job: store::Job) {
         } else {
             // An approved action with a ChatGPT agent model still runs on Claude, so Haiku stands in for it.
             let model = if codex_model.is_some() { "haiku" } else { settings.models.agent.as_str() };
-            jobs::run(&work, &dir, &notes, approved, model, &job.prompt, on_spawn, on_activity)
+            let tune = jobs::Tune { effort: settings.models.effort.clone(), advisor: settings.models.advisor.clone() };
+            jobs::run(&work, &dir, &notes, approved, model, &tune, &job.prompt, on_spawn, on_activity)
         }
     });
     let report = match outcome {
@@ -396,12 +486,16 @@ fn run_job(app: &AppHandle, job: store::Job) {
             let added = add_plan(app, &title, &done.summary, done.schedule);
             let summary = if added > 0 { format!("{summary}\n\nAdded {added} blocks to your schedule.") } else { summary };
             log_err(engine.store().finish(id, "done", &summary));
-            tell(narrate::Line::Overview(format!("Done: {title}. {}", narrate::overview(&done.summary))));
+            if talk {
+                tell(narrate::Line::Overview(format!("Done: {title}. {}", narrate::overview(&done.summary))));
+            }
             Some((summary, done.open))
         }
         Err(e) => {
             log_err(engine.store().finish(id, "failed", &e));
-            tell(narrate::Line::Overview(format!("{} didn't finish. It's in your briefing.", job_title(&engine, id))));
+            if talk {
+                tell(narrate::Line::Overview(format!("{} didn't finish. It's in your briefing.", job_title(&engine, id))));
+            }
             None
         }
     };
@@ -797,7 +891,8 @@ fn instant_command(engine: &Engine, text: &str) -> bool {
         return true;
     }
     let aliases = engine.aliases().unwrap_or_default();
-    launcher::parse_open(text).is_some_and(|q| matches!(engine.find(&q, &aliases), Match::One(_)))
+    launcher::parse_close(text).is_some_and(|q| resolve_one(engine, &q, &aliases).is_some())
+        || launcher::parse_open(text).is_some_and(|q| matches!(engine.find(&q, &aliases), Match::One(_)))
         || named_app(engine, text, &aliases).is_some()
 }
 
@@ -1510,6 +1605,17 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    use super::Voice;
+
+    #[test]
+    fn speaks_only_when_asked() {
+        assert_eq!(Voice::for_dump("Can you tell me what's on today"), Voice::Speak);
+        assert_eq!(Voice::for_dump("just say the weather"), Voice::Speak);
+        assert_eq!(Voice::for_dump("What's the capital of France?"), Voice::Cue);
+        assert_eq!(Voice::for_dump("how do magnets work"), Voice::Cue);
+        assert_eq!(Voice::for_dump("write a poem about rain"), Voice::Quiet);
+    }
+
     #[test]
     fn filler_is_not_acted_on() {
         for filler in ["Oh.", "Thank you.", "Open.", "1 . 2 3 7 7 8", ""] {

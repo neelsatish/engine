@@ -43,17 +43,29 @@ const DENIED: &str = "Bash(git push:*) Bash(gh:*) Bash(curl -X POST:*) PowerShel
 
 /// Settings layered over the user's own for agent runs: the outward-tool guard, and superpowers off, because its
 /// brainstorming gate waits for a human to approve a design and a background agent has nobody to ask.
-fn settings(engine_exe: &Path, approved: Option<(&str, &Path)>) -> String {
+fn settings(engine_exe: &Path, approved: Option<(&str, &Path)>, advisor: &str) -> String {
     let slash = |p: &Path| p.to_string_lossy().replace('\\', "/");
     let mut guard = format!("\"{}\" --guard", slash(engine_exe));
     if let Some((tool, marker)) = approved {
         guard += &format!(" --allow \"{tool}\" --once \"{}\"", slash(marker));
     }
-    serde_json::json!({
+    let mut s = serde_json::json!({
         "hooks": {"PreToolUse": [{"matcher": "mcp__.*", "hooks": [{"type": "command", "command": guard}]}]},
         "enabledPlugins": {"superpowers@claude-plugins-official": false}
-    })
-    .to_string()
+    });
+    if !advisor.is_empty() {
+        s["advisorModel"] = advisor.into(); // a stronger model the agent can consult, like Claude Code's /advisor
+    }
+    s.to_string()
+}
+
+/// How hard an agent thinks, and which stronger model it may consult. Empty means Claude Code's default.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Tune {
+    /// low, medium, high, xhigh or max.
+    pub effort: String,
+    /// The advisor model ("fable", "opus"), or empty for none.
+    pub advisor: String,
 }
 
 /// Whether an MCP tool acts outward: others would see it, or it can't be undone. Matched on whole words of the
@@ -229,6 +241,7 @@ pub fn run(
     notes: &[String],
     approved: Option<(&str, &Path)>,
     model: &str,
+    tune: &Tune,
     prompt: &str,
     on_spawn: impl FnOnce(u32),
     mut on_activity: impl FnMut(&'static str, String),
@@ -254,7 +267,10 @@ pub fn run(
         .args(["--model", model, "--append-system-prompt", &system, "--json-schema", SCHEMA])
         // Unattended: every tool is allowed except the denied commands, and the guard hook refuses outward ones.
         .args(["--permission-mode", "bypassPermissions", "--permission-prompts", "none"])
-        .args(["--disallowedTools", DENIED, "--settings", &settings(&exe, approved)]);
+        .args(["--disallowedTools", DENIED, "--settings", &settings(&exe, approved, &tune.advisor)]);
+    if ["low", "medium", "high", "xhigh", "max"].contains(&tune.effort.as_str()) {
+        cmd.args(["--effort", &tune.effort]);
+    }
     if !notes.is_empty() {
         cmd.arg("--add-dir").args(notes);
     }
@@ -641,10 +657,13 @@ mod tests {
 
     #[test]
     fn guard_settings_are_valid_json() {
-        let s: Value = serde_json::from_str(&settings(Path::new("C:\\Users\\x\\engine.exe"), None)).unwrap();
+        let s: Value = serde_json::from_str(&settings(Path::new("C:\\Users\\x\\engine.exe"), None, "")).unwrap();
         let cmd = s["hooks"]["PreToolUse"][0]["hooks"][0]["command"].as_str().unwrap();
         assert_eq!(cmd, "\"C:/Users/x/engine.exe\" --guard");
-        let approved = settings(Path::new("C:\\e.exe"), Some(("mcp__a__send", Path::new("C:\\j\\once"))));
+        assert!(s.get("advisorModel").is_none());
+        let advised: Value = serde_json::from_str(&settings(Path::new("C:\\e.exe"), None, "fable")).unwrap();
+        assert_eq!(advised["advisorModel"], "fable");
+        let approved = settings(Path::new("C:\\e.exe"), Some(("mcp__a__send", Path::new("C:\\j\\once"))), "");
         let s: Value = serde_json::from_str(&approved).unwrap();
         let cmd = s["hooks"]["PreToolUse"][0]["hooks"][0]["command"].as_str().unwrap();
         assert_eq!(cmd, "\"C:/e.exe\" --guard --allow \"mcp__a__send\" --once \"C:/j/once\"");

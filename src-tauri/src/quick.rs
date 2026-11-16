@@ -49,6 +49,15 @@ pub fn stop_all(input: &str) -> bool {
     .contains(&s.as_str())
 }
 
+/// "Mark all briefings as completed", "clear the briefing": clears every finished or waiting item.
+pub fn clear_briefing(input: &str) -> bool {
+    let s = clean(input);
+    let about = ["briefing", "briefings", "items", "tasks", "everything", "all"].iter().any(|w| s.split_whitespace().any(|x| x == *w));
+    let clear = ["clear", "mark all", "mark everything", "complete all", "dismiss all"].iter().any(|w| s.starts_with(w));
+    let done = s.starts_with("clear") || ["done", "completed", "complete", "finished", "read"].iter().any(|w| s.ends_with(w));
+    about && clear && done
+}
+
 /// The text between `prefix` and `suffix` in `s`, if `s` has that shape and the middle isn't empty.
 fn between<'a>(s: &'a str, prefix: &str, suffix: &str) -> Option<&'a str> {
     let middle = s.strip_prefix(prefix)?.strip_suffix(suffix)?.trim();
@@ -220,6 +229,10 @@ mod tests {
         assert!(stop_all("Engine, stop all processes"));
         assert!(!stop_all("stop the music")); // that's a media key, handled by parse
         assert!(!stop_all("stop by the shop at 5"));
+        assert!(clear_briefing("Mark all briefings as completed"));
+        assert!(clear_briefing("clear the briefing"));
+        assert!(clear_briefing("mark everything as done"));
+        assert!(!clear_briefing("mark the meeting in my calendar"));
         assert_eq!(parse("play"), Some(Quick::Media(Media::PlayPause)));
         assert_eq!(parse("make me a playlist for studying"), None);
         assert_eq!(parse("research the best headphones"), None);

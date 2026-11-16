@@ -36,11 +36,15 @@ pub struct Models {
     pub agent: String,
     /// Answers and the end-of-day review.
     pub answer: String,
+    /// How hard agents think: low, medium, high, xhigh or max; empty for Claude Code's default.
+    pub effort: String,
+    /// A stronger model agents may consult ("fable", "opus"); empty for none.
+    pub advisor: String,
 }
 
 impl Default for Models {
     fn default() -> Self {
-        Self { agent: "haiku".into(), answer: "sonnet".into() }
+        Self { agent: "haiku".into(), answer: "sonnet".into(), effort: String::new(), advisor: String::new() }
     }
 }
 
@@ -178,7 +182,7 @@ mod tests {
             knowledge: vec!["C:\\Notes".into(), " c:\\notes ".into(), "".into()],
             voice: Voice { model: "huge".into(), ..Voice::default() },
             local_ai: true,
-            models: Models { agent: "opus".into(), answer: "gpt".into() },
+            models: Models { agent: "opus".into(), answer: "gpt".into(), ..Models::default() },
             folder: "C:\\work".into(),
             recent: vec!["C:\\old".into(), "c:\\WORK".into()],
         };

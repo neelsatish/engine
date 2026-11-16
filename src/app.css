@@ -171,6 +171,44 @@ svg.ico {
   stroke-linejoin: round;
 }
 
+/* Small controls in the chat's prompt bar (folder, model, cloud/local). */
+.tool-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 120px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tool-chip .chip-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tool-chip:hover:not(:disabled) {
+  border-color: color-mix(in oklab, var(--border), white 22%);
+  color: var(--text);
+}
+
+.tool-chip svg {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+}
+
+.tool-chip:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 /* Every pressable thing answers the same way: steps up 1px on hover, sinks 1px and scales .985 on press. */
 .button,
 .chip,

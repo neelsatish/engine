@@ -126,6 +126,16 @@ impl Store {
         Ok(self.0.last_insert_rowid())
     }
 
+    /// What the person said in a dump, or empty.
+    pub fn dump_text(&self, id: i64) -> Result<String> {
+        self.0.query_row("SELECT text FROM dumps WHERE id = ?1", [id], |r| r.get(0)).optional().map(Option::unwrap_or_default)
+    }
+
+    /// Clears the briefing: every item that isn't queued or running is marked dismissed. Returns how many.
+    pub fn clear_briefing(&self) -> Result<usize> {
+        self.0.execute("UPDATE items SET status = 'dismissed' WHERE status IN ('done', 'held', 'failed')", [])
+    }
+
     pub fn add_item(&self, dump: Option<i64>, kind: &str, title: &str, detail: &str, status: &str, result: &str) -> Result<i64> {
         self.0.execute(
             "INSERT INTO items (dump_id, kind, title, detail, status, result) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",

@@ -58,6 +58,69 @@ pub fn parse_open(input: &str) -> Option<String> {
     (!name.is_empty()).then(|| name.to_string())
 }
 
+/// Pulls the name out of a "close X" request ("close Spotify", "hey Engine, quit Discord", "can you close my
+/// Notepad"). Only at the start, after a wake word or "please"/"can you": "close the deal with Sam" mid-sentence is
+/// left to the router.
+pub fn parse_close(input: &str) -> Option<String> {
+    let lower = input.trim().to_lowercase();
+    let mut s = lower.as_str();
+    if let Some(rest) = WAKE.iter().find_map(|w| strip_word(s, w)) {
+        s = rest;
+    }
+    for lead in ["please", "can you", "could you"] {
+        if let Some(rest) = strip_word(s, lead) {
+            s = rest;
+        }
+    }
+    let rest = ["close", "quit", "exit"].iter().find_map(|v| strip_word(s, v))?;
+    let rest = strip_word(rest, "my").or_else(|| strip_word(rest, "the")).unwrap_or(rest);
+    let name = rest.trim_end_matches(|c: char| !c.is_alphanumeric());
+    let name = name.strip_suffix(" please").unwrap_or(name).trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// Closes an app's windows gracefully, the same as clicking its X, so it can still ask to save. Matched by process
+/// name or product name, never window title (a browser tab called "Claude" mustn't close the browser). Returns
+/// what to tell the person.
+pub fn close(t: &Target) -> Result<String, String> {
+    // Engine itself, Explorer, and the host every Store app window lives in are never closed.
+    // No double quotes in here: they don't survive being passed to powershell.exe as an argument.
+    let script = r#"
+$q = $env:ENGINE_CLOSE
+$skip = @($PID, [int]$env:ENGINE_PID)
+$plain = { param($s) ([string]$s -replace '[^a-zA-Z0-9]', '').ToLower() }
+$found = Get-Process | Where-Object {
+  $_.Id -notin $skip -and $_.ProcessName -notin @('explorer', 'ApplicationFrameHost', 'engine', 'powershell') -and (
+    ((& $plain $_.ProcessName) -like ('*' + $q + '*')) -or
+    ((& $plain $_.Product) -eq $q) -or
+    ((& $plain $_.Description) -eq $q))
+}
+if (-not $found) { 'none'; exit }
+$closed = 0
+foreach ($p in $found) { if ($p.MainWindowHandle -ne 0 -and $p.CloseMainWindow()) { $closed++ } }
+if ($closed -gt 0) { 'closed' } else { 'hidden' }
+"#;
+    let q = squash(&t.name);
+    if q.len() < 3 {
+        return Err(format!("“{}” is too short a name to close safely.", t.name));
+    }
+    let mut cmd = Command::new("powershell.exe");
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .env("ENGINE_CLOSE", &q)
+        .env("ENGINE_PID", std::process::id().to_string());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let out = cmd.output().map_err(|e| format!("Couldn't close {}: {e}", t.name))?;
+    match String::from_utf8_lossy(&out.stdout).trim() {
+        "closed" => Ok(format!("Closed {}", t.name)),
+        "hidden" => Ok(format!("{} has no window open (it may be in the tray)", t.name)),
+        _ => Err(format!("{} isn't open", t.name)),
+    }
+}
+
 /// How well `name` matches `query` (both lowercase): 3 exact, 2 starts with, 1 starts a later word, 0 none.
 /// Mid-word matches don't count, so "ord" never opens Discord.
 fn score(query: &str, name: &str) -> u8 {
@@ -223,6 +286,16 @@ mod tests {
         assert_eq!(parse_open("I'll open ChatGPT.").as_deref(), Some("chatgpt"));
         assert_eq!(parse_open("Hello, can you open? Opera.").as_deref(), Some("opera"));
         assert_eq!(parse_open("reopen the case").as_deref(), None);
+    }
+
+    #[test]
+    fn parses_close_requests() {
+        assert_eq!(parse_close("close Spotify").as_deref(), Some("spotify"));
+        assert_eq!(parse_close("Hey Engine, can you quit my Discord please.").as_deref(), Some("discord"));
+        assert_eq!(parse_close("exit notepad").as_deref(), Some("notepad"));
+        assert_eq!(parse_close("closed the tab").as_deref(), None);
+        assert_eq!(parse_close("is the shop close by").as_deref(), None);
+        assert_eq!(parse_close("close").as_deref(), None);
     }
 
     #[test]

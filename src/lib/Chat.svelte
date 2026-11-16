@@ -5,6 +5,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
   import { tick } from "svelte";
+  import ModelMenu from "$lib/ModelMenu.svelte";
   import Orb, { type Process } from "$lib/Orb.svelte";
   import { engine, savePrefs, submit as send, type Item, type Reply, type Target } from "$lib/state.svelte";
 
@@ -14,13 +15,6 @@
   let folderMenu = $state(false);
   let powering = $state(false);
   let expanded = $state<number[]>([]);
-  const CLAUDE_MODELS = [["haiku", "Haiku"], ["sonnet", "Sonnet"], ["opus", "Opus"], ["fable", "Fable"]];
-  const CHATGPT_MODELS = [
-    ["codex:gpt-6.1-sol", "GPT-6.1 Sol"],
-    ["codex:gpt-6-astra", "GPT-6 Astra"],
-    ["codex:gpt-6.1-terra", "GPT-6.1 Terra"],
-    ["codex:gpt-6-luna", "GPT-6 Luna"],
-  ];
   const fallback = { folder: "", recent: [] as string[], models: { agent: "haiku", answer: "sonnet" }, local_ai: false };
   const prefs = $derived(engine.prefs ?? fallback);
   const voice = $derived(engine.voice);
@@ -321,23 +315,7 @@
               </div>
             {/if}
           </div>
-          <label class="tool-chip model" title="The model background agents use">
-            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"
-              ><path d="M12 3l1.8 4.6L18 9l-4.2 1.4L12 15l-1.8-4.6L6 9l4.2-1.4z" /><path d="M19 15l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z" /></svg
-            >
-            <select
-              aria-label="Agent model"
-              value={prefs.models.agent}
-              onchange={(e) => savePrefs({ models: { ...prefs.models, agent: e.currentTarget.value } })}
-            >
-              <optgroup label="Claude">
-                {#each CLAUDE_MODELS as [id, name] (id)}<option value={id}>{name}</option>{/each}
-              </optgroup>
-              <optgroup label="ChatGPT (Codex)">
-                {#each CHATGPT_MODELS as [id, name] (id)}<option value={id}>{name}</option>{/each}
-              </optgroup>
-            </select>
-          </label>
+          <ModelMenu />
           <button
             type="button"
             class="tool-chip power"
@@ -663,63 +641,9 @@
     min-width: 0;
   }
 
-  .tool-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    max-width: 120px;
-    height: 28px;
-    padding: 0 8px;
-    border: 1px solid var(--border);
-    border-radius: var(--r-sm);
-    background: var(--surface-2);
-    color: var(--text-secondary);
-    font-size: 12px;
-    white-space: nowrap;
-    cursor: pointer;
-    transition: border-color var(--ease), color var(--ease);
-  }
-
-  .chip-text {
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .tool-chip:hover:not(:disabled) {
-    border-color: color-mix(in oklab, var(--border), white 22%);
-    color: var(--text);
-  }
-
-  .tool-chip svg {
-    width: 13px;
-    height: 13px;
-    flex-shrink: 0;
-  }
-
-  .tool-chip select {
-    max-width: 78px;
-    border: 0;
-    outline: 0;
-    background: transparent;
-    color: inherit;
-    font: inherit;
-    cursor: pointer;
-  }
-
   .tool-chip.power.on {
     border-color: rgb(95 212 160 / 0.55);
     color: var(--success);
-  }
-
-  .tool-chip:disabled {
-    opacity: 0.6;
-    cursor: default;
-  }
-
-  .tool-chip option,
-  .tool-chip optgroup {
-    background: #13101c;
-    color: var(--text);
   }
 
   .menu-wrap {

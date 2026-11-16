@@ -30,7 +30,7 @@ export type Reply =
 export type Prefs = {
   folder: string;
   recent: string[];
-  models: { agent: string; answer: string };
+  models: { agent: string; answer: string; effort?: string; advisor?: string };
   local_ai: boolean;
   voice: { live: boolean; auto_submit: boolean; speak_on_summon: boolean } & Record<string, unknown>;
 } & Record<string, unknown>;
