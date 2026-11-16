@@ -46,6 +46,8 @@ pub struct Project {
     /// What the user calls it in a dump: "my app", "the channel".
     pub name: String,
     pub folder: String,
+    /// Who works on it: "claude" (Haiku agents with the user's skills and connectors) or "codex".
+    pub runner: String,
 }
 
 impl Settings {
@@ -63,6 +65,9 @@ impl Settings {
         self.projects.retain_mut(|p| {
             p.name = p.name.trim().to_string();
             p.folder = p.folder.trim().to_string();
+            if p.runner != "codex" {
+                p.runner = "claude".into();
+            }
             !p.name.is_empty() && !p.folder.is_empty() && seen.insert(p.name.to_lowercase())
         });
         if !["small", "base.en", "large-v3-turbo"].contains(&self.voice.model.as_str()) {
@@ -108,15 +113,16 @@ mod tests {
 
         let messy = Settings {
             projects: vec![
-                Project { name: " My App ".into(), folder: " C:\\code\\app ".into() },
-                Project { name: "my app".into(), folder: "C:\\dupe".into() },
-                Project { name: "".into(), folder: "C:\\x".into() },
+                Project { name: " My App ".into(), folder: " C:\\code\\app ".into(), runner: "codex".into() },
+                Project { name: "my app".into(), folder: "C:\\dupe".into(), runner: String::new() },
+                Project { name: "".into(), folder: "C:\\x".into(), runner: String::new() },
             ],
             knowledge: vec!["C:\\Notes".into(), " c:\\notes ".into(), "".into()],
             voice: Voice { model: "huge".into(), ..Voice::default() },
         };
         let saved = messy.save(&path).unwrap();
-        assert_eq!(saved.projects, [Project { name: "My App".into(), folder: "C:\\code\\app".into() }]);
+        let app = Project { name: "My App".into(), folder: "C:\\code\\app".into(), runner: "codex".into() };
+        assert_eq!(saved.projects, [app]);
         assert_eq!(saved.knowledge, ["C:\\Notes"]);
         assert_eq!(saved.voice.model, "small"); // unknown models fall back
         assert_eq!(Settings::load(&path).unwrap(), saved);

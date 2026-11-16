@@ -7,7 +7,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { onMount } from "svelte";
 
-  type Project = { name: string; folder: string };
+  type Project = { name: string; folder: string; runner: string };
   type Voice = { model: string; auto_submit: boolean; speak_on_summon: boolean; engine: string; clip: string };
   type Settings = { projects: Project[]; knowledge: string[]; voice: Voice };
   type VoiceStatus = { python: boolean; whisper: boolean; chatterbox: boolean; own_env: boolean };
@@ -23,6 +23,7 @@
   let installing = $state(false);
   let installLine = $state("");
   let newName = $state("");
+  let newRunner = $state("claude");
   let autostart = $state(false);
   let version = $state("");
   let note = $state("");
@@ -46,7 +47,7 @@
     if (!name) return;
     const folder = await chooseFolder(`Choose the folder for “${name}”`);
     if (!folder) return;
-    await save({ ...settings, projects: [...settings.projects, { name, folder }] });
+    await save({ ...settings, projects: [...settings.projects, { name, folder, runner: newRunner }] });
     newName = "";
   }
 
@@ -107,7 +108,10 @@
 
   <section class="card glass">
     <h2>Projects <span class="count">{settings.projects.length}</span></h2>
-    <p class="hint">Name a folder, and dumps that mention it run there: "keep going on my app" works in your app's folder.</p>
+    <p class="hint">
+      Name a folder, and dumps that mention it run there: "keep going on my app" works in your app's folder. Claude
+      agents get your skills and connectors; Codex uses your ChatGPT sign-in and works offline in its sandbox.
+    </p>
     {#if settings.projects.length}
       <ul class="rows">
         {#each settings.projects as p, i (p.name)}
@@ -116,6 +120,16 @@
               <span class="name">{p.name}</span>
               <span class="path" title={p.folder}>{p.folder}</span>
             </div>
+            <select
+              class="input"
+              aria-label="Who works on {p.name}"
+              value={p.runner}
+              onchange={(e) =>
+                save({ ...settings, projects: settings.projects.map((q, j) => (j === i ? { ...q, runner: e.currentTarget.value } : q)) })}
+            >
+              <option value="claude">Claude</option>
+              <option value="codex">Codex</option>
+            </select>
             <button
               class="link"
               aria-label="Remove {p.name}"
@@ -134,6 +148,10 @@
     >
       <label class="sr" for="project-name">Project name</label>
       <input id="project-name" class="input" bind:value={newName} placeholder="Project name, e.g. my app" />
+      <select class="input" bind:value={newRunner} aria-label="Who works on it">
+        <option value="claude">Claude</option>
+        <option value="codex">Codex</option>
+      </select>
       <button class="button" type="submit" disabled={!newName.trim()}>Choose folder…</button>
     </form>
   </section>

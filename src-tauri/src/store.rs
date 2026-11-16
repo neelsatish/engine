@@ -298,6 +298,11 @@ impl Store {
         )
     }
 
+    /// The day after `date` ("YYYY-MM-DD").
+    pub fn day_after(&self, date: &str) -> Result<String> {
+        self.0.query_row("SELECT date(?1, '+1 day')", [date], |r| r.get(0))
+    }
+
     /// The local date for prompts, e.g. "Monday 2026-11-16".
     pub fn today(&self) -> Result<String> {
         let (weekday, date): (i64, String) = self.0.query_row(

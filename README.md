@@ -36,6 +36,10 @@ Agents get your own Claude Code setup: your CLAUDE.md, skills, plugins, MCP serv
 Google Drive, Notion and so on). The one exception is superpowers, which is turned off for agents because its
 brainstorming step waits for a person to approve a design, and a background agent has nobody to ask.
 
+A project can be worked on by **Codex** instead (set it per project in Settings). Codex runs `codex exec` on your
+ChatGPT sign-in, in its workspace-write sandbox, with its MCP servers, apps, plugins, browser and computer use turned
+off so it can't act outward. Approved actions always run on Claude, where the one-call guard and your connectors are.
+
 Each job gets its own folder under `%APPDATA%\com.engine.desktop\jobs\`, with the agent's full log in
 `agent-log.jsonl`. A job about one of your **projects** works in that project's folder instead. Cancel stops a running
 agent and everything it started; Retry re-runs a failed job.
@@ -84,6 +88,9 @@ Only clone a voice you own or have permission to use.
 - **Notes:** folders agents may read, with your Obsidian vault first. Jobs that mention your notes, subjects or
   documents search them.
 - **Start with Windows:** Engine starts hidden in the tray when you sign in.
+
+**Review my day** (next to Read aloud) writes a short end-of-day review: what got done, what's open, what looked
+doubtful, what tomorrow holds, and the first three things to do. It lands under Done.
 
 Settings are saved in `%APPDATA%\com.engine.desktop\settings.json`.
 

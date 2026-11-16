@@ -161,6 +161,38 @@ pub struct UserTask {
     pub follow_up: String,
 }
 
+pub fn review_system(today: &str) -> String {
+    format!(
+        "You are Engine, the user's desktop assistant. Today is {today}. Write a short end-of-day review: what got \
+         done, what's still open and what to do about it, what failed or looked doubtful, and what tomorrow holds. \
+         End with the three most useful things to do first tomorrow. Plain text, short lines, \"- \" bullets, no \
+         markdown headings. Under 200 words."
+    )
+}
+
+/// What the end-of-day review looks at: today's briefing, and today's and tomorrow's schedule.
+pub fn review_prompt(items: &[crate::store::Item], today: &[crate::schedule::Block], tomorrow: &[crate::schedule::Block]) -> String {
+    let mut text = String::from("Today's briefing:\n");
+    for i in items.iter().filter(|i| i.kind != "instant") {
+        let verdict = match i.verdict.as_str() {
+            "good" => " (checked: looks good)".to_string(),
+            "concern" => format!(" (checked: concern: {})", i.verdict_reason),
+            _ => String::new(),
+        };
+        text += &format!("- [{}] {}: {}{verdict}\n", i.status, i.kind, i.title);
+    }
+    let opened = items.iter().filter(|i| i.kind == "instant").count();
+    text += &format!("Opened {opened} apps or sites.\n\nToday's schedule:\n");
+    for b in today {
+        text += &format!("- {}–{} {} ({})\n", &b.start[11..], &b.end[11..], b.title, b.kind);
+    }
+    text += "\nTomorrow's schedule:\n";
+    for b in tomorrow {
+        text += &format!("- {}–{} {} ({})\n", &b.start[11..], &b.end[11..], b.title, b.kind);
+    }
+    text
+}
+
 /// Instructions for the agent that carries out an action the user approved.
 pub fn approved_prompt(action: &str, details: &str, tool: &str) -> String {
     let tool = if tool.is_empty() { String::new() } else { format!("\nUse {tool}.") };
@@ -279,8 +311,12 @@ pub fn outcome(event: &Value) -> Result<Outcome, String> {
     if event["is_error"] != Value::Bool(false) {
         return Err(event["result"].as_str().unwrap_or("The agent reported an error.").to_string());
     }
-    let out = &event["structured_output"];
-    let summary = out["summary"].as_str().or(event["result"].as_str()).unwrap_or_default().trim().to_string();
+    Ok(structured(&event["structured_output"], event["result"].as_str()))
+}
+
+/// Builds an outcome from an agent's structured reply; `fallback` is its plain text if the structure is missing.
+fn structured(out: &Value, fallback: Option<&str>) -> Outcome {
+    let summary = out["summary"].as_str().or(fallback).unwrap_or_default().trim().to_string();
     let open = out["open"]
         .as_array()
         .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
@@ -289,7 +325,123 @@ pub fn outcome(event: &Value) -> Result<Outcome, String> {
     let proposed = serde_json::from_value(list("proposed")).unwrap_or_default();
     let needs_you = serde_json::from_value(list("needs_you")).unwrap_or_default();
     let schedule = serde_json::from_value(list("schedule")).unwrap_or_default();
-    Ok(Outcome { summary, open, proposed, needs_you, schedule })
+    Outcome { summary, open, proposed, needs_you, schedule }
+}
+
+/// The result format for Codex. OpenAI's strict schemas need every field required and no extra fields, so empty
+/// arrays and strings stand in for "none".
+const CODEX_SCHEMA: &str = r#"{"type":"object","additionalProperties":false,"required":["summary","open","proposed","needs_you","schedule"],"properties":{"summary":{"type":"string"},"open":{"type":"array","items":{"type":"string"}},"proposed":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["action","details","tool"],"properties":{"action":{"type":"string"},"details":{"type":"string"},"tool":{"type":"string"}}}},"needs_you":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["task","follow_up"],"properties":{"task":{"type":"string"},"follow_up":{"type":"string"}}}},"schedule":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["title","start","end","kind"],"properties":{"title":{"type":"string"},"start":{"type":"string"},"end":{"type":"string"},"kind":{"type":"string","enum":["study","deadline","test","recording","other"]}}}}}}"#;
+
+/// Runs one job with Codex (`codex exec`), on the user's ChatGPT sign-in. Codex works in its workspace-write
+/// sandbox (no network, writes only in `work`) with its MCP servers, apps, plugins, browser and computer use turned
+/// off, so it can't reach anything outward; outward steps come back as proposals like any other agent's.
+pub fn run_codex(
+    work: &Path,
+    log_dir: &Path,
+    prompt: &str,
+    on_spawn: impl FnOnce(u32),
+    mut on_activity: impl FnMut(&'static str, String),
+) -> Result<Outcome, String> {
+    let schema = log_dir.join("codex-schema.json");
+    let last = log_dir.join("codex-result.json");
+    std::fs::write(&schema, CODEX_SCHEMA).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(&last);
+    let mut cmd = program("codex");
+    cmd.current_dir(work)
+        .args(["exec", "--json", "--skip-git-repo-check", "--ephemeral"])
+        // The user's config stays (it sets up Codex's Windows sandbox), but nothing that could act outward does:
+        // no MCP servers, apps, plugins, browser or computer use.
+        .args(["-c", "mcp_servers={}"])
+        .args(["--disable", "apps", "--disable", "plugins", "--disable", "computer_use"])
+        .args(["--disable", "browser_use", "--disable", "browser_use_external", "--disable", "in_app_browser"])
+        .args(["--sandbox", "workspace-write", "--output-schema"])
+        .arg(&schema)
+        .arg("-o")
+        .arg(&last)
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let mut child = cmd.spawn().map_err(|e| format!("Couldn't start Codex ({e}). Is the Codex CLI installed?"))?;
+    on_spawn(child.id());
+    let instructions = format!("{SYSTEM}\n\nThe task:\n{prompt}");
+    child
+        .stdin
+        .take()
+        .expect("stdin is piped")
+        .write_all(instructions.as_bytes())
+        .map_err(|e| format!("Couldn't talk to Codex: {e}"))?;
+    let mut stderr = child.stderr.take().expect("stderr is piped");
+    let errors = std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = stderr.read_to_string(&mut s);
+        s
+    });
+
+    let mut log = File::create(log_dir.join("agent-log.jsonl")).ok();
+    let mut failure = None;
+    for line in BufReader::new(child.stdout.take().expect("stdout is piped")).lines() {
+        let Ok(line) = line else { break };
+        if let Some(log) = log.as_mut() {
+            let _ = writeln!(log, "{line}");
+        }
+        let Ok(event) = serde_json::from_str::<Value>(&line) else { continue };
+        if event["type"] == "turn.failed" || event["type"] == "error" {
+            failure = event["error"]["message"].as_str().or(event["message"].as_str()).map(str::to_string);
+        } else if let Some((process, label)) = codex_activity(&event) {
+            on_activity(process, label);
+        }
+    }
+    let _ = child.wait();
+    let errors = errors.join().unwrap_or_default();
+    if let Some(e) = failure {
+        return Err(e);
+    }
+    let text = std::fs::read_to_string(&last).map_err(|_| {
+        errors.lines().rev().find(|l| !l.trim().is_empty()).map_or("Codex stopped before it finished.".into(), |l| l.trim().to_string())
+    })?;
+    let out: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    Ok(structured(&out, Some(&text)))
+}
+
+/// A command for a CLI on the PATH. npm installs some CLIs (Codex among them) as `.cmd` launchers, which Windows
+/// only runs through cmd.exe, so those are wrapped in `cmd /C`.
+fn program(name: &str) -> Command {
+    let on_path = |file: String| {
+        std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(&file).is_file()))
+    };
+    if cfg!(windows) && !on_path(format!("{name}.exe")) && on_path(format!("{name}.cmd")) {
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/D", "/C", name]);
+        cmd
+    } else {
+        Command::new(name)
+    }
+}
+
+/// What Codex is doing, from one `codex exec --json` event.
+pub fn codex_activity(event: &Value) -> Option<(&'static str, String)> {
+    if event["type"] != "item.started" && event["type"] != "item.completed" {
+        return None;
+    }
+    let item = &event["item"];
+    match item["type"].as_str()? {
+        "reasoning" | "agent_message" => Some(("thinking", "Thinking".into())),
+        "command_execution" => Some(("working", "Running a command".into())),
+        "file_change" => Some(("writing", "Editing files".into())),
+        "web_search" => Some(("searching", match item["query"].as_str() {
+            Some(q) => format!("Searching the web for “{}”", short(q)),
+            None => "Searching the web".into(),
+        })),
+        "mcp_tool_call" => Some(("working", short(&format!("Using {}", item["tool"].as_str().unwrap_or("a tool"))))),
+        "todo_list" => Some(("thinking", "Planning".into())),
+        _ => None, // "error" items are Codex's own config warnings
+    }
 }
 
 /// What the agent is doing, from one stream event: the orb to show and a short label.
@@ -397,6 +549,20 @@ mod tests {
         assert_eq!(outcome(&plan).unwrap().schedule[0].title, "Faraday");
         let failed = json!({"type": "result", "is_error": true, "result": "Not logged in"});
         assert_eq!(outcome(&failed), Err("Not logged in".into()));
+    }
+
+    #[test]
+    fn reads_codex_events() {
+        let cmd = json!({"type": "item.started", "item": {"type": "command_execution", "command": "ls"}});
+        assert_eq!(codex_activity(&cmd), Some(("working", "Running a command".into())));
+        let edit = json!({"type": "item.completed", "item": {"type": "file_change"}});
+        assert_eq!(codex_activity(&edit).unwrap().0, "writing");
+        assert_eq!(codex_activity(&json!({"type": "item.completed", "item": {"type": "error", "message": "x"}})), None);
+        assert_eq!(codex_activity(&json!({"type": "turn.completed"})), None);
+        let out = structured(&json!({"summary": "Did it", "open": [], "proposed": [], "needs_you": [], "schedule": []}), None);
+        assert_eq!(out.summary, "Did it");
+        let schema: Value = serde_json::from_str(CODEX_SCHEMA).unwrap();
+        assert_eq!(schema["required"].as_array().unwrap().len(), 5);
     }
 
     #[test]

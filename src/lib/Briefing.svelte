@@ -146,6 +146,14 @@
     }
   }
 
+  async function reviewDay() {
+    try {
+      await invoke("review_day");
+    } catch (e) {
+      note = `Couldn't start the review: ${e}`;
+    }
+  }
+
   async function readAloud() {
     try {
       await invoke("speak_briefing");
@@ -198,12 +206,20 @@
 >
   <div class="dump-head">
     <label class="label" for="dump">Dump</label>
+    <span class="head-actions">
+    <button class="link speak" onclick={reviewDay} title="A short look back at today and ahead to tomorrow">
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"
+        ><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9" /></svg
+      >
+      Review my day
+    </button>
     <button class="link speak" onclick={readAloud} title="Read the briefing aloud">
       <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"
         ><path d="M11 5 6 9H3v6h3l5 4z" /><path d="M15.5 8.5a5 5 0 0 1 0 7" /><path d="M18.5 5.5a9 9 0 0 1 0 13" /></svg
       >
       Read aloud
     </button>
+    </span>
   </div>
   <div class="field glass">
     <textarea
@@ -425,6 +441,11 @@
 
   .dump-head .label {
     margin: 0;
+  }
+
+  .head-actions {
+    display: flex;
+    gap: 2px;
   }
 
   .speak {

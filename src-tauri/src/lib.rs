@@ -230,30 +230,27 @@ fn run_job(app: &AppHandle, job: store::Job) {
     let dir = engine.work_dir.join("jobs").join(id.to_string());
     let settings = engine.settings();
     // A job for a known project works in that project's folder; anything else gets its own folder.
-    let work = settings
-        .project(&job.project)
-        .map(|p| PathBuf::from(&p.folder))
-        .filter(|f| f.is_dir())
-        .unwrap_or_else(|| dir.clone());
+    let project = settings.project(&job.project);
+    let work = project.map(|p| PathBuf::from(&p.folder)).filter(|f| f.is_dir()).unwrap_or_else(|| dir.clone());
+    // Approved actions always go to Claude: the one-call guard and the user's connectors live there.
+    let codex = job.tool.is_empty() && project.is_some_and(|p| p.runner == "codex");
     let notes = settings.knowledge_dirs();
     let marker = dir.join("approved.once");
     let approved = (!job.tool.is_empty()).then(|| (job.tool.as_str(), marker.as_path()));
     changed(app);
+    let on_spawn = |pid| {
+        engine.jobs.lock().unwrap().insert(id, pid);
+    };
+    let on_activity = |process: &'static str, label: String| {
+        log_err(engine.store().set_activity(id, process, &label));
+        changed(app);
+    };
     let outcome = fs::create_dir_all(&dir).map_err(|e| format!("Couldn't make the job folder: {e}")).and_then(|()| {
-        jobs::run(
-            &work,
-            &dir,
-            &notes,
-            approved,
-            &job.prompt,
-            |pid| {
-                engine.jobs.lock().unwrap().insert(id, pid);
-            },
-            |process, label| {
-                log_err(engine.store().set_activity(id, process, &label));
-                changed(app);
-            },
-        )
+        if codex {
+            jobs::run_codex(&work, &dir, &job.prompt, on_spawn, on_activity)
+        } else {
+            jobs::run(&work, &dir, &notes, approved, &job.prompt, on_spawn, on_activity)
+        }
     });
     let report = match outcome {
         Ok(done) => {
@@ -261,8 +258,11 @@ fn run_job(app: &AppHandle, job: store::Job) {
             for wanted in &done.open {
                 open_for_job(&engine, dump, &work, wanted, &aliases);
             }
-            let made = fs::read_dir(&dir).map_or(0, |d| d.flatten().filter(|f| f.file_name() != "agent-log.jsonl").count());
-            let saved = if made > 0 { format!("\n\nSaved in {}", dir.display()) } else { String::new() };
+            // Point at the job folder only when the agent worked there and left something besides Engine's own files.
+            let ours = |name: &str| name == "agent-log.jsonl" || name.starts_with("codex-") || name == "approved.once";
+            let made = fs::read_dir(&dir)
+                .map_or(0, |d| d.flatten().filter(|f| !ours(&f.file_name().to_string_lossy())).count());
+            let saved = if work == dir && made > 0 { format!("\n\nSaved in {}", dir.display()) } else { String::new() };
             let summary = format!("{}{saved}", done.summary);
             for p in &done.proposed {
                 log_err(engine.store().add_held("outward", dump, &p.action, &p.details, &p.tool, &job.project));
@@ -462,6 +462,34 @@ fn task_done(id: i64, app: AppHandle) -> Result<(), String> {
         pump(&app);
     }
     changed(&app);
+    Ok(())
+}
+
+/// End-of-day review: a short look back at today and ahead to tomorrow, added to Done like an answer.
+#[tauri::command]
+fn review_day(app: AppHandle) -> Result<(), String> {
+    let engine = app.state::<Engine>();
+    let items = engine.store().briefing().map_err(|e| e.to_string())?;
+    let (from, to) = engine.store().today_range().map_err(|e| e.to_string())?;
+    let day_after = format!("{}T00:00", engine.store().day_after(&to[..10]).map_err(|e| e.to_string())?);
+    let today = engine.store().blocks(&from, &to).map_err(|e| e.to_string())?;
+    let tomorrow = engine.store().blocks(&to, &day_after).map_err(|e| e.to_string())?;
+    let id = engine
+        .store()
+        .add_item(None, "answer", "Review of today", "", "running", "")
+        .map_err(|e| e.to_string())?;
+    changed(&app);
+    let prompt = jobs::review_prompt(&items, &today, &tomorrow);
+    std::thread::spawn(move || {
+        let engine = app.state::<Engine>();
+        let today = engine.store().today().unwrap_or_default();
+        let (status, text) = match ai::ask(&engine.work_dir, router::ANSWER_MODEL, &jobs::review_system(&today), &prompt, None) {
+            Ok(reply) => ("done", reply.as_str().unwrap_or_default().trim().to_string()),
+            Err(e) => ("failed", e),
+        };
+        log_err(engine.store().finish(id, status, &text));
+        changed(&app);
+    });
     Ok(())
 }
 
@@ -780,6 +808,7 @@ pub fn run() {
             approve,
             revise,
             task_done,
+            review_day,
             voice_start,
             voice_stop,
             speak_briefing,
