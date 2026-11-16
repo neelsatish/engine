@@ -63,3 +63,209 @@ button {
     animation: none !important;
   }
 }
+
+/* Shared pieces used by every view. */
+
+/* Panels over the background rain: translucent and blurred, so text never sits on the moving characters. */
+.glass {
+  background: var(--glass);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  backdrop-filter: blur(14px);
+}
+
+.card {
+  padding: 14px var(--space-md) 4px;
+  margin-bottom: var(--space-md);
+}
+
+.label,
+.card h2 {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin: 0 0 var(--space-sm);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.count {
+  min-width: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font-size: 11px;
+  letter-spacing: 0;
+  text-align: center;
+}
+
+.hint {
+  margin: 0 0 var(--space-md);
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+svg.ico {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.link {
+  flex-shrink: 0;
+  padding: var(--space-xs) var(--space-sm);
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  transition: color var(--ease), background var(--ease);
+}
+
+.link:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 13px;
+  transition: border-color var(--ease), filter var(--ease);
+}
+
+.button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.button.primary {
+  border-color: transparent;
+  background: var(--accent-gradient);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+.button.primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.input {
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  outline: 0;
+  background: rgb(14 12 21 / 0.7);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  user-select: text;
+  transition: border-color var(--ease), box-shadow var(--ease);
+}
+
+.input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  padding-bottom: 10px;
+}
+
+.chip {
+  padding: 6px 14px;
+  background: rgb(29 25 42 / 0.8);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  transition: background var(--ease), border-color var(--ease), color var(--ease);
+}
+
+.chip:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+/* One line tall, so dots and orbs sit centred on an item's first line. */
+.indicator {
+  display: grid;
+  place-items: center;
+  align-self: flex-start;
+  width: 18px;
+  height: 1.5em;
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.dot.ok {
+  background: var(--success);
+  box-shadow: 0 0 8px rgb(95 212 160 / 0.45);
+}
+
+.dot.warn {
+  background: var(--danger);
+  box-shadow: 0 0 8px rgb(240 113 138 / 0.45);
+}
+
+.rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.rows > li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-md);
+  padding: 10px 0;
+  border-bottom: 1px solid rgb(42 37 64 / 0.6);
+}
+
+.rows > li:last-child {
+  border-bottom: 0;
+}
+
+.scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+kbd {
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  font: inherit;
+  font-size: 11px;
+}

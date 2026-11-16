@@ -20,7 +20,8 @@
         "minHeight": 380,
         "center": true,
         "decorations": false,
-        "backgroundColor": "#0E0C15"
+        "backgroundColor": "#0E0C15",
+        "visible": false
       }
     ],
     "security": {
@@ -29,7 +30,9 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
@@ -42,7 +45,9 @@
   "plugins": {
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDRBNDc3ODZGRjlGQjlBNEIKUldSTG12djViM2hIU3ZWRjUxY3BFOHRDdSszaHZNMUFxV3FzS3ZZelVWbjFvbnJzYmZkcm4xMTcK",
-      "endpoints": ["https://github.com/neelsatish/engine/releases/latest/download/latest.json"]
+      "endpoints": [
+        "https://github.com/neelsatish/engine/releases/latest/download/latest.json"
+      ]
     }
   }
 }

@@ -18,9 +18,22 @@ pub struct Item {
     pub process: String,
     pub result: String,
     pub created: String,
+    /// For a finished job: "checking", "good" or "concern" from the audit, or empty.
+    pub verdict: String,
+    pub verdict_reason: String,
 }
 
 pub struct Store(Connection);
+
+/// A job taken off the queue to run.
+#[derive(Debug, PartialEq)]
+pub struct Job {
+    pub id: i64,
+    pub dump: Option<i64>,
+    pub prompt: String,
+    /// A project name from Settings, or empty.
+    pub project: String,
+}
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS dumps (
@@ -47,6 +60,16 @@ impl Store {
         if db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? < 1 {
             db.execute_batch("ALTER TABLE items ADD COLUMN process TEXT NOT NULL DEFAULT ''; PRAGMA user_version = 1;")?;
         }
+        if db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? < 2 {
+            db.execute_batch("ALTER TABLE items ADD COLUMN project TEXT NOT NULL DEFAULT ''; PRAGMA user_version = 2;")?;
+        }
+        if db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? < 3 {
+            db.execute_batch(
+                "ALTER TABLE items ADD COLUMN verdict TEXT NOT NULL DEFAULT '';
+                 ALTER TABLE items ADD COLUMN verdict_reason TEXT NOT NULL DEFAULT '';
+                 PRAGMA user_version = 3;",
+            )?;
+        }
         // An answer or job that was mid-flight when Engine quit will never finish.
         db.execute(
             "UPDATE items SET status = 'failed', result = 'Engine closed before this finished.' WHERE status = 'running'",
@@ -64,6 +87,15 @@ impl Store {
         self.0.execute(
             "INSERT INTO items (dump_id, kind, title, detail, status, result) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![dump, kind, title, detail, status, result],
+        )?;
+        Ok(self.0.last_insert_rowid())
+    }
+
+    /// Queues a job for an agent; `project` is a project name from Settings, or empty.
+    pub fn add_job(&self, dump: Option<i64>, title: &str, detail: &str, project: &str) -> Result<i64> {
+        self.0.execute(
+            "INSERT INTO items (dump_id, kind, title, detail, status, project) VALUES (?1, 'job', ?2, ?3, 'queued', ?4)",
+            params![dump, title, detail, project],
         )?;
         Ok(self.0.last_insert_rowid())
     }
@@ -86,15 +118,15 @@ impl Store {
         Ok(())
     }
 
-    /// Marks the oldest queued job running and returns its id, dump and instructions.
-    pub fn claim_job(&self) -> Result<Option<(i64, Option<i64>, String)>> {
+    /// Marks the oldest queued job running and returns it.
+    pub fn claim_job(&self) -> Result<Option<Job>> {
         self.0
             .query_row(
                 "UPDATE items SET status = 'running', result = 'Starting', process = 'thinking'
                  WHERE id = (SELECT id FROM items WHERE kind = 'job' AND status = 'queued' ORDER BY id LIMIT 1)
-                 RETURNING id, dump_id, detail",
+                 RETURNING id, dump_id, detail, project",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok(Job { id: r.get(0)?, dump: r.get(1)?, prompt: r.get(2)?, project: r.get(3)? }),
             )
             .optional()
     }
@@ -108,10 +140,20 @@ impl Store {
         Ok(n > 0)
     }
 
+    /// Records the audit of a finished job: "checking" while it runs, then "good" or "concern".
+    pub fn set_verdict(&self, id: i64, verdict: &str, reason: &str) -> Result<()> {
+        self.0.execute(
+            "UPDATE items SET verdict = ?2, verdict_reason = ?3 WHERE id = ?1",
+            params![id, verdict, reason],
+        )?;
+        Ok(())
+    }
+
     /// Puts a failed job back in the queue.
     pub fn retry(&self, id: i64) -> Result<()> {
         self.0.execute(
-            "UPDATE items SET status = 'queued', result = '', process = '' WHERE id = ?1 AND kind = 'job' AND status = 'failed'",
+            "UPDATE items SET status = 'queued', result = '', process = '', verdict = '', verdict_reason = ''
+             WHERE id = ?1 AND kind = 'job' AND status = 'failed'",
             [id],
         )?;
         Ok(())
@@ -126,7 +168,7 @@ impl Store {
     /// Today's items plus anything unfinished from earlier days, oldest first.
     pub fn briefing(&self) -> Result<Vec<Item>> {
         let mut q = self.0.prepare(
-            "SELECT id, kind, title, status, process, result, created FROM items
+            "SELECT id, kind, title, status, process, result, created, verdict, verdict_reason FROM items
              WHERE (day = date('now', 'localtime') AND status != 'dismissed')
                 OR (kind != 'instant' AND status IN ('queued', 'running', 'held', 'failed'))
              ORDER BY id",
@@ -140,6 +182,8 @@ impl Store {
                 process: r.get(4)?,
                 result: r.get(5)?,
                 created: r.get(6)?,
+                verdict: r.get(7)?,
+                verdict_reason: r.get(8)?,
             })
         })?
         .collect()
@@ -195,23 +239,29 @@ mod tests {
     #[test]
     fn jobs_queue_run_and_cancel() {
         let s = Store::open(Path::new(":memory:")).unwrap();
-        let first = s.add_item(None, "job", "first", "do one", "queued", "").unwrap();
-        let second = s.add_item(None, "job", "second", "do two", "queued", "").unwrap();
+        let first = s.add_job(None, "first", "do one", "my app").unwrap();
+        let second = s.add_job(None, "second", "do two", "").unwrap();
 
-        assert_eq!(s.claim_job().unwrap(), Some((first, None, "do one".into())));
+        let job = Job { id: first, dump: None, prompt: "do one".into(), project: "my app".into() };
+        assert_eq!(s.claim_job().unwrap(), Some(job));
         s.set_activity(first, "viewing", "Reading plan.md").unwrap();
         let item = &s.briefing().unwrap()[0];
         assert_eq!((item.process.as_str(), item.result.as_str()), ("viewing", "Reading plan.md"));
 
         assert!(s.cancel(first).unwrap());
         s.finish(first, "failed", "killed").unwrap(); // the run ending after Cancel changes nothing
-        assert_eq!(s.claim_job().unwrap().map(|j| j.0), Some(second));
+        assert_eq!(s.claim_job().unwrap().map(|j| j.id), Some(second));
         assert_eq!(s.claim_job().unwrap(), None);
 
         s.finish(second, "failed", "oops").unwrap();
         s.retry(second).unwrap();
-        assert_eq!(s.claim_job().unwrap().map(|j| j.0), Some(second));
+        assert_eq!(s.claim_job().unwrap().map(|j| j.id), Some(second));
         let titles: Vec<_> = s.briefing().unwrap().into_iter().map(|i| i.title).collect();
         assert_eq!(titles, ["second"]);
+
+        s.finish(second, "done", "did it").unwrap();
+        s.set_verdict(second, "concern", "Skipped part two.").unwrap();
+        let item = &s.briefing().unwrap()[0];
+        assert_eq!((item.verdict.as_str(), item.verdict_reason.as_str()), ("concern", "Skipped part two."));
     }
 }

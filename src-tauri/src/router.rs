@@ -34,6 +34,9 @@ pub struct Item {
     /// For an instant website: its URL, used when no alias or app matches.
     #[serde(default)]
     pub url: Option<String>,
+    /// For a job: which of the person's projects it belongs to, by name.
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 pub const MODEL: &str = "haiku";
@@ -44,7 +47,7 @@ pub const SYSTEM: &str = r#"You sort a person's brain dump for Engine, their des
 Kinds:
 - instant: open an app, website or folder on this PC. title: "Open <name>". detail: only the name, without "my" (for example "YouTube" or "Downloads folder"); use one of the person's shortcut names when one fits. url: the https URL when it is a website; leave it out for apps and folders.
 - answer: something a single written reply can fully deliver with no tools, no web, and none of the person's files or accounts: an explanation, a plan, ideas, a draft text. detail: the complete question with every fact the person gave, written so it stands alone.
-- job: work that needs tools: the person's files, projects, notes or documents, their email or other accounts, the web, or running code. An AI agent does it on its own: it can search and read the web, read and write files, run commands, and open websites, apps and files when it finishes. detail: complete instructions for that agent, including the person's own words.
+- job: work that needs tools: the person's files, projects, notes or documents, their email or other accounts, the web, or running code. An AI agent does it on its own: it can search and read the web, read and write files, run commands, and open websites, apps and files when it finishes. detail: complete instructions for that agent, including the person's own words. project: when the job is about one of the person's projects, that project's name exactly as listed; leave it out otherwise.
 - outward: anything other people will see or that cannot be undone: sending or replying to a message, posting, uploading, publishing, deleting, paying. detail: exactly what would happen.
 
 Rules:
@@ -53,11 +56,12 @@ Rules:
 - One item per distinct request. Do not invent, merge or skip requests. Ignore greetings such as "hey Engine".
 - title: a short imperative under 60 characters, in the person's language."#;
 
-pub const SCHEMA: &str = r#"{"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"kind":{"type":"string","enum":["instant","answer","job","outward"]},"title":{"type":"string"},"detail":{"type":"string"},"url":{"type":"string"}},"required":["kind","title","detail"]}}},"required":["items"]}"#;
+pub const SCHEMA: &str = r#"{"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"kind":{"type":"string","enum":["instant","answer","job","outward"]},"title":{"type":"string"},"detail":{"type":"string"},"url":{"type":"string"},"project":{"type":"string"}},"required":["kind","title","detail"]}}},"required":["items"]}"#;
 
-/// The router's message: the person's shortcut names, then their dump.
-pub fn prompt(dump: &str, shortcuts: &[String]) -> String {
-    format!("Shortcuts: {}\n\nDump:\n{dump}", shortcuts.join(", "))
+/// The router's message: the person's shortcut and project names, then their dump.
+pub fn prompt(dump: &str, shortcuts: &[String], projects: &[String]) -> String {
+    let projects = if projects.is_empty() { "(none)".to_string() } else { projects.join(", ") };
+    format!("Shortcuts: {}\nProjects: {projects}\n\nDump:\n{dump}", shortcuts.join(", "))
 }
 
 pub fn parse(out: serde_json::Value) -> Result<Vec<Item>, String> {
@@ -104,7 +108,7 @@ mod tests {
                 &std::env::temp_dir(),
                 MODEL,
                 SYSTEM,
-                &prompt(dump, &["gmail".into(), "youtube".into()]),
+                &prompt(dump, &["gmail".into(), "youtube".into()], &["my app".into()]),
                 Some(SCHEMA),
             );
             let items = parse(out.unwrap()).unwrap();

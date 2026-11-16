@@ -2,6 +2,7 @@ pub mod ai;
 pub mod jobs;
 pub mod launcher;
 pub mod router;
+pub mod settings;
 pub mod store;
 
 use launcher::{Match, Target};
@@ -24,6 +25,7 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 struct Engine {
     apps: Mutex<Vec<Target>>,
     aliases_path: PathBuf,
+    settings_path: PathBuf,
     store: Mutex<Store>,
     /// Where model calls run, so no project's Claude Code settings apply to them. Jobs get folders under it.
     work_dir: PathBuf,
@@ -53,6 +55,11 @@ impl Engine {
             Match::Nothing => launcher::resolve(query, aliases, &self.apps(true)),
             found => found,
         }
+    }
+
+    /// Settings as saved; a broken file counts as empty here (the Settings view reports it).
+    fn settings(&self) -> settings::Settings {
+        settings::Settings::load(&self.settings_path).unwrap_or_default()
     }
 
     fn store(&self) -> MutexGuard<'_, Store> {
@@ -119,7 +126,8 @@ fn handle_dump(app: &AppHandle, text: &str) -> Reply {
         Err(e) => return Reply::Error { message: format!("Couldn't save the dump: {e}") },
     };
     let shortcuts: Vec<String> = aliases.iter().map(|a| a.name.clone()).collect();
-    let prompt = router::prompt(text, &shortcuts);
+    let projects: Vec<String> = engine.settings().projects.into_iter().map(|p| p.name).collect();
+    let prompt = router::prompt(text, &shortcuts, &projects);
     let items = match ai::ask(&engine.work_dir, router::MODEL, router::SYSTEM, &prompt, Some(router::SCHEMA))
         .and_then(router::parse)
     {
@@ -175,7 +183,8 @@ fn start(app: &AppHandle, engine: &Engine, dump: i64, aliases: &[Target], item: 
             });
         }
         Kind::Job => {
-            add("queued", "");
+            let project = item.project.as_deref().unwrap_or_default();
+            log_err(engine.store().add_job(Some(dump), &item.title, &item.detail, project));
         }
         Kind::Outward => {
             add("held", "Held for your approval. Approval cards arrive in a later update.");
@@ -191,22 +200,33 @@ fn pump(app: &AppHandle) {
         if running.len() >= jobs::MAX_RUNNING {
             return;
         }
-        let Some((id, dump, prompt)) = log_err(engine.store().claim_job()).flatten() else { return };
-        running.insert(id, 0);
+        let Some(job) = log_err(engine.store().claim_job()).flatten() else { return };
+        running.insert(job.id, 0);
         drop(running);
         let app = app.clone();
-        std::thread::spawn(move || run_job(&app, id, dump, &prompt));
+        std::thread::spawn(move || run_job(&app, job));
     }
 }
 
-fn run_job(app: &AppHandle, id: i64, dump: Option<i64>, prompt: &str) {
+fn run_job(app: &AppHandle, job: store::Job) {
     let engine = app.state::<Engine>();
+    let (id, dump) = (job.id, job.dump);
     let dir = engine.work_dir.join("jobs").join(id.to_string());
+    let settings = engine.settings();
+    // A job for a known project works in that project's folder; anything else gets its own folder.
+    let work = settings
+        .project(&job.project)
+        .map(|p| PathBuf::from(&p.folder))
+        .filter(|f| f.is_dir())
+        .unwrap_or_else(|| dir.clone());
+    let notes = settings.knowledge_dirs();
     changed(app);
     let outcome = fs::create_dir_all(&dir).map_err(|e| format!("Couldn't make the job folder: {e}")).and_then(|()| {
         jobs::run(
+            &work,
             &dir,
-            prompt,
+            &notes,
+            &job.prompt,
             |pid| {
                 engine.jobs.lock().unwrap().insert(id, pid);
             },
@@ -216,23 +236,44 @@ fn run_job(app: &AppHandle, id: i64, dump: Option<i64>, prompt: &str) {
             },
         )
     });
-    match outcome {
+    let report = match outcome {
         Ok(done) => {
             let aliases = engine.aliases().unwrap_or_default();
             for wanted in &done.open {
-                open_for_job(&engine, dump, &dir, wanted, &aliases);
+                open_for_job(&engine, dump, &work, wanted, &aliases);
             }
             let made = fs::read_dir(&dir).map_or(0, |d| d.flatten().filter(|f| f.file_name() != "agent-log.jsonl").count());
             let saved = if made > 0 { format!("\n\nSaved in {}", dir.display()) } else { String::new() };
-            log_err(engine.store().finish(id, "done", &format!("{}{saved}", done.summary)));
+            let summary = format!("{}{saved}", done.summary);
+            log_err(engine.store().finish(id, "done", &summary));
+            Some((summary, done.open))
         }
         Err(e) => {
             log_err(engine.store().finish(id, "failed", &e));
+            None
         }
-    }
+    };
     engine.jobs.lock().unwrap().remove(&id);
     changed(app);
-    pump(app);
+    pump(app); // free the slot before the audit, which is quick and doesn't count against the cap
+
+    if let Some((summary, opened)) = report {
+        audit(app, id, &job.prompt, &summary, &opened);
+    }
+}
+
+/// Checks a finished job against its task and records "good" or "concern" with a reason.
+fn audit(app: &AppHandle, id: i64, task: &str, report: &str, opened: &[String]) {
+    let engine = app.state::<Engine>();
+    log_err(engine.store().set_verdict(id, "checking", ""));
+    changed(app);
+    let prompt = jobs::audit_prompt(task, report, opened);
+    let (verdict, reason) = ai::ask(&engine.work_dir, jobs::MODEL, jobs::AUDIT_SYSTEM, &prompt, Some(jobs::AUDIT_SCHEMA))
+        .ok()
+        .and_then(|out| jobs::audit_verdict(&out))
+        .unwrap_or_else(|| (String::new(), String::new())); // no verdict beats a wrong one
+    log_err(engine.store().set_verdict(id, &verdict, &reason));
+    changed(app);
 }
 
 /// Opens what a finished agent asked for: a web address, a file it made in its folder, or an app or alias by name.
@@ -326,6 +367,16 @@ fn retry(id: i64, app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn get_settings(engine: State<Engine>) -> Result<settings::Settings, String> {
+    settings::Settings::load(&engine.settings_path)
+}
+
+#[tauri::command]
+fn save_settings(settings: settings::Settings, engine: State<Engine>) -> Result<settings::Settings, String> {
+    settings.save(&engine.settings_path)
+}
+
+#[tauri::command]
 fn edit_aliases(engine: State<Engine>) -> Result<(), String> {
     launcher::load_aliases(&engine.aliases_path)?;
     launcher::launch(&engine.aliases_path.to_string_lossy()).map_err(|e| e.to_string())
@@ -357,6 +408,9 @@ pub fn run() {
         // Must be first: a second launch just brings the running Engine forward.
         .plugin(tauri_plugin_single_instance::init(|app, _, _| show(app)))
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
+        // Started at sign-in with --autostart, Engine stays hidden in the tray.
+        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--autostart"])))
         .plugin(tauri_plugin_process::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -369,11 +423,16 @@ pub fn run() {
         )
         .setup(move |app| {
             let aliases_path = app.path().app_config_dir()?.join("aliases.json");
+            let settings_path = app.path().app_config_dir()?.join("settings.json");
             let work_dir = app.path().app_data_dir()?;
             fs::create_dir_all(&work_dir)?;
             let store = Mutex::new(Store::open(&work_dir.join("engine.db"))?);
-            app.manage(Engine { apps: Mutex::new(vec![]), aliases_path, store, work_dir, jobs: Mutex::default() });
+            app.manage(Engine { apps: Mutex::new(vec![]), aliases_path, settings_path, store, work_dir, jobs: Mutex::default() });
             pump(app.handle()); // jobs queued before Engine last closed
+
+            if !std::env::args().any(|a| a == "--autostart") {
+                show(app.handle());
+            }
 
             // Build the app index in the background so the first "open X" is instant.
             let handle = app.handle().clone();
@@ -417,7 +476,17 @@ pub fn run() {
                 let _ = window.hide();
             }
         })
-        .invoke_handler(tauri::generate_handler![submit, open_choice, briefing, dismiss, cancel, retry, edit_aliases])
+        .invoke_handler(tauri::generate_handler![
+            submit,
+            open_choice,
+            briefing,
+            dismiss,
+            cancel,
+            retry,
+            get_settings,
+            save_settings,
+            edit_aliases
+        ])
         .run(tauri::generate_context!())
         .expect("error while running Engine");
 }

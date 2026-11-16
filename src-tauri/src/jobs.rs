@@ -85,28 +85,64 @@ pub fn guard() -> i32 {
     }
 }
 
+/// The audit: a second, tool-free model call that checks a finished job against what was asked.
+pub const AUDIT_SYSTEM: &str = "You check work done by a background AI agent for its user. Given the task and the \
+agent's report, decide whether the work does what was asked. Answer good when it does. Answer concern when part of \
+the task is missing, the report is vague about what was actually done, it relies on guesses it doesn't flag, or it \
+did something outward (sent, posted, deleted) that it shouldn't have. reason: one short sentence the user can act on.";
+
+pub const AUDIT_SCHEMA: &str = r#"{"type":"object","properties":{"verdict":{"type":"string","enum":["good","concern"]},"reason":{"type":"string"}},"required":["verdict","reason"]}"#;
+
+pub fn audit_prompt(task: &str, report: &str, opened: &[String]) -> String {
+    let opened = if opened.is_empty() { "nothing".to_string() } else { opened.join(", ") };
+    format!("Task:\n{task}\n\nAgent's report:\n{report}\n\nEngine opened for the user: {opened}")
+}
+
+/// Reads the audit's structured reply as (verdict, reason).
+pub fn audit_verdict(out: &Value) -> Option<(String, String)> {
+    let verdict = out["verdict"].as_str().filter(|v| matches!(*v, "good" | "concern"))?;
+    Some((verdict.to_string(), out["reason"].as_str().unwrap_or_default().trim().to_string()))
+}
+
 #[derive(Debug, PartialEq)]
 pub struct Outcome {
     pub summary: String,
     pub open: Vec<String>,
 }
 
-/// Runs one job to the end. `on_spawn` gets the agent's process id (for Cancel); `on_activity` gets each step
-/// as (orb process, label). The agent's raw event stream is kept in `agent-log.jsonl` in `dir`.
+/// Runs one job to the end in `work` (a project folder, or the job's own folder), with read access to `notes`.
+/// `on_spawn` gets the agent's process id (for Cancel); `on_activity` gets each step as (orb process, label).
+/// The agent's raw event stream is kept in `agent-log.jsonl` in `log_dir`.
 pub fn run(
-    dir: &Path,
+    work: &Path,
+    log_dir: &Path,
+    notes: &[String],
     prompt: &str,
     on_spawn: impl FnOnce(u32),
     mut on_activity: impl FnMut(&'static str, String),
 ) -> Result<Outcome, String> {
     let exe = std::env::current_exe().map_err(|e| format!("Couldn't find Engine's own path for the agent guard: {e}"))?;
+    let system = match notes {
+        [] => SYSTEM.to_string(),
+        [vault, rest @ ..] => {
+            let more = if rest.is_empty() { String::new() } else { format!(" Other notes and documents: {}.", rest.join("; ")) };
+            format!(
+                "{SYSTEM} The user's Obsidian vault is {vault}.{more} Search these when the task mentions their notes, \
+                 subjects, syllabus or documents."
+            )
+        }
+    };
     let mut cmd = Command::new("claude");
-    cmd.current_dir(dir)
+    cmd.current_dir(work)
         .args(["-p", "--no-session-persistence", "--verbose", "--output-format", "stream-json"])
-        .args(["--model", MODEL, "--append-system-prompt", SYSTEM, "--json-schema", SCHEMA])
+        .args(["--model", MODEL, "--append-system-prompt", &system, "--json-schema", SCHEMA])
         // Unattended: every tool is allowed except the denied commands, and the guard hook refuses outward ones.
         .args(["--permission-mode", "bypassPermissions", "--permission-prompts", "none"])
-        .args(["--disallowedTools", DENIED, "--settings", &settings(&exe)])
+        .args(["--disallowedTools", DENIED, "--settings", &settings(&exe)]);
+    if !notes.is_empty() {
+        cmd.arg("--add-dir").args(notes);
+    }
+    cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -134,7 +170,7 @@ pub fn run(
         s
     });
 
-    let mut log = File::create(dir.join("agent-log.jsonl")).ok();
+    let mut log = File::create(log_dir.join("agent-log.jsonl")).ok();
     let mut result = None;
     for line in BufReader::new(child.stdout.take().expect("stdout is piped")).lines() {
         let Ok(line) = line else { break };
@@ -263,6 +299,14 @@ mod tests {
         assert_eq!(outcome(&done), Ok(Outcome { summary: "Did it.".into(), open: vec!["https://a.com".into()] }));
         let failed = json!({"type": "result", "is_error": true, "result": "Not logged in"});
         assert_eq!(outcome(&failed), Err("Not logged in".into()));
+    }
+
+    #[test]
+    fn reads_audit_verdicts() {
+        let good = json!({"verdict": "good", "reason": " Covers all three. "});
+        assert_eq!(audit_verdict(&good), Some(("good".into(), "Covers all three.".into())));
+        assert_eq!(audit_verdict(&json!({"verdict": "maybe", "reason": "x"})), None);
+        assert!(audit_prompt("do x", "did x", &[]).contains("opened for the user: nothing"));
     }
 
     #[test]
