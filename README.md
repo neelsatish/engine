@@ -68,3 +68,7 @@ npm run tauri dev
 Tests: `cargo test` in `src-tauri`. Add `-- --include-ignored` to also check your real Start menu and run the
 router on sample dumps through Claude Code (this uses your plan).
 Release build: `npm run tauri build`.
+
+## Credits
+
+Status orbs: [Thinking Orbs](https://github.com/yogesharc/thinking-orbs) by Yogesh, MIT licence.

@@ -7,6 +7,7 @@
   import { relaunch } from "@tauri-apps/plugin-process";
   import { check, type Update } from "@tauri-apps/plugin-updater";
   import { onMount } from "svelte";
+  import Orb, { type Process } from "$lib/Orb.svelte";
 
   type Target = { name: string; target: string };
   type Reply =
@@ -136,8 +137,8 @@
     }
   }
 
-  const tone = (i: Item) =>
-    ({ done: "ok", failed: "warn", running: "live", held: "hold", queued: "muted" })[i.status];
+  // Work in progress shows an orb for what it's doing; finished items get a plain dot.
+  const ORB_FOR: Partial<Record<Item["status"], Process>> = { running: "writing", queued: "waiting", held: "held" };
   const time = (i: Item) => i.created.slice(11, 16);
 
   onMount(() => {
@@ -190,9 +191,9 @@
     </div>
     <p class="status" aria-live="polite">
       {#if sorting}
-        <span class="dot live" aria-hidden="true"></span>Sorting your dump…
+        <span class="indicator"><Orb process="thinking" size={16} /></span>Sorting your dump…
       {:else if note}
-        <span class="dot warn" aria-hidden="true"></span>{note}
+        <span class="indicator"><span class="dot warn" aria-hidden="true"></span></span>{note}
       {/if}
     </p>
   </form>
@@ -214,8 +215,15 @@
         <h2>{s.name}</h2>
         <ul>
           {#each s.items as i (i.id)}
+            {@const process = ORB_FOR[i.status]}
             <li>
-              <span class="dot {tone(i)}" aria-hidden="true"></span>
+              <span class="indicator">
+                {#if process}
+                  <Orb {process} />
+                {:else}
+                  <span class="dot {i.status === 'failed' ? 'warn' : 'ok'}" aria-hidden="true"></span>
+                {/if}
+              </span>
               <div class="body">
                 {#if i.kind === "instant"}
                   <span class="text">{i.result || i.title}</span>
@@ -247,6 +255,7 @@
     <span class="actions">
       {#if update}
         <button class="link update" onclick={installUpdate} disabled={updating}>
+          {#if updating}<Orb process="updating" size={14} />{/if}
           {updating ? "Updating…" : `Restart to update to ${update.version}`}
         </button>
       {/if}
@@ -440,12 +449,21 @@
     border-bottom: 1px solid var(--border);
   }
 
+  /* One line tall, so dots and orbs sit centred on an item's first line. */
+  .indicator {
+    display: grid;
+    place-items: center;
+    align-self: flex-start;
+    width: 18px;
+    height: 1.5em;
+    flex-shrink: 0;
+    color: var(--accent);
+  }
+
   .dot {
     width: 8px;
     height: 8px;
-    flex-shrink: 0;
     border-radius: 50%;
-    transform: translateY(-1px);
   }
 
   .dot.ok {
@@ -453,22 +471,6 @@
   }
   .dot.warn {
     background: var(--danger);
-  }
-  .dot.muted {
-    background: var(--text-muted);
-  }
-  .dot.hold {
-    background: var(--accent);
-  }
-  .dot.live {
-    background: var(--accent);
-    animation: pulse 1.2s ease-in-out infinite;
-  }
-
-  @keyframes pulse {
-    50% {
-      opacity: 0.3;
-    }
   }
 
   .body {
@@ -560,6 +562,9 @@
   }
 
   .update {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     color: var(--accent);
     font-weight: 600;
   }
