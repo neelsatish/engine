@@ -25,6 +25,9 @@ pub struct Item {
     /// For a finished job: "checking", "good" or "concern" from the audit, or empty.
     pub verdict: String,
     pub verdict_reason: String,
+    /// The dump it came from, and what the person said there (for the chat).
+    pub dump: Option<i64>,
+    pub said: String,
 }
 
 pub struct Store(Connection);
@@ -261,10 +264,12 @@ impl Store {
     /// Today's items plus anything unfinished from earlier days, oldest first.
     pub fn briefing(&self) -> Result<Vec<Item>> {
         let mut q = self.0.prepare(
-            "SELECT id, kind, title, status, process, result, created, verdict, verdict_reason, detail FROM items
-             WHERE (day = date('now', 'localtime') AND status != 'dismissed')
-                OR (kind != 'instant' AND status IN ('queued', 'running', 'held', 'failed'))
-             ORDER BY id",
+            "SELECT i.id, i.kind, i.title, i.status, i.process, i.result, i.created, i.verdict, i.verdict_reason,
+                    i.detail, i.dump_id, COALESCE(d.text, '')
+             FROM items i LEFT JOIN dumps d ON d.id = i.dump_id
+             WHERE (i.day = date('now', 'localtime') AND i.status != 'dismissed')
+                OR (i.kind != 'instant' AND i.status IN ('queued', 'running', 'held', 'failed'))
+             ORDER BY i.id",
         )?;
         q.query_map([], |r| {
             Ok(Item {
@@ -278,6 +283,8 @@ impl Store {
                 verdict: r.get(7)?,
                 verdict_reason: r.get(8)?,
                 detail: r.get(9)?,
+                dump: r.get(10)?,
+                said: r.get(11)?,
             })
         })?
         .collect()

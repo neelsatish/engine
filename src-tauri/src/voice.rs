@@ -387,6 +387,8 @@ mod tests {
             created: String::new(),
             verdict: String::new(),
             verdict_reason: String::new(),
+            dump: None,
+            said: String::new(),
         }
     }
 

@@ -120,8 +120,8 @@ fn launch(engine: &Engine, dump: Option<i64>, title: &str, t: &Target) -> Result
     result
 }
 
-fn open_reply(app: &AppHandle, t: Target) -> Reply {
-    let reply = match launch(&app.state::<Engine>(), None, &format!("Open {}", t.name), &t) {
+fn open_reply(app: &AppHandle, dump: Option<i64>, t: Target) -> Reply {
+    let reply = match launch(&app.state::<Engine>(), dump, &format!("Open {}", t.name), &t) {
         Ok(()) => Reply::Opened { name: t.name },
         Err(message) => Reply::Error { message },
     };
@@ -168,24 +168,28 @@ fn handle_dump(app: &AppHandle, text: &str) -> Reply {
         Ok(a) => a,
         Err(reply) => return reply,
     };
+    // Saved first, so the chat shows what was said next to whatever Engine did about it.
+    let dump = match engine.store().add_dump(text) {
+        Ok(id) => id,
+        Err(e) => return Reply::Error { message: format!("Couldn't save the dump: {e}") },
+    };
+    if quick::stop_all(text) {
+        return stop_all(app, dump);
+    }
     // Fastest path: media, volume, YouTube, Spotify, web search, lock. No model.
     if let Some(q) = quick::parse(text) {
-        return run_quick(app, None, q);
+        return run_quick(app, Some(dump), q);
     }
     // Fast path: a plain "open X" skips the model so it feels instant.
     if let Some(query) = launcher::parse_open(text) {
         match engine.find(&query, &aliases) {
-            Match::One(t) => return open_reply(app, t),
+            Match::One(t) => return open_reply(app, Some(dump), t),
             Match::Choices(items) => return Reply::Choices { items },
             // Several requests in one, or a site with no alias: the router sorts it out.
             Match::Nothing => {}
         }
     }
 
-    let dump = match engine.store().add_dump(text) {
-        Ok(id) => id,
-        Err(e) => return Reply::Error { message: format!("Couldn't save the dump: {e}") },
-    };
     let shortcuts: Vec<String> = aliases.iter().map(|a| a.name.clone()).collect();
     let projects: Vec<String> = engine.settings().projects.into_iter().map(|p| p.name).collect();
     let now = engine.store().now().map(|n| n.1).unwrap_or_default();
@@ -474,7 +478,7 @@ fn open_choice(choice: Target, app: AppHandle) -> Reply {
     };
     // Only open what Engine itself offered, so the UI can't launch arbitrary targets.
     if aliases.contains(&choice) || engine.apps(false).contains(&choice) {
-        open_reply(&app, choice)
+        open_reply(&app, None, choice)
     } else {
         Reply::Error { message: format!("{} isn't in the app list any more.", choice.name) }
     }
@@ -502,6 +506,29 @@ fn cancel(id: i64, app: AppHandle) -> Result<(), String> {
     }
     changed(&app);
     Ok(())
+}
+
+/// "Stop everything": ends every running agent, drops queued ones, and stops Engine talking.
+fn stop_all(app: &AppHandle, dump: i64) -> Reply {
+    let engine = app.state::<Engine>();
+    stop_speech(&engine);
+    let busy: Vec<(i64, String)> = log_err(engine.store().briefing())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|i| matches!(i.status.as_str(), "queued" | "running") && i.kind != "instant")
+        .map(|i| (i.id, i.status))
+        .collect();
+    for (id, status) in &busy {
+        let _ = if status == "queued" { dismiss(*id, app.clone()) } else { cancel(*id, app.clone()) };
+    }
+    let text = match busy.len() {
+        0 => "Nothing was running.".to_string(),
+        1 => "Stopped 1 task.".to_string(),
+        n => format!("Stopped {n} tasks."),
+    };
+    log_err(engine.store().add_item(Some(dump), "instant", "Stop everything", "", "done", &text));
+    changed(app);
+    Reply::Opened { name: text }
 }
 
 /// Quit from the tray. With agents still working, Engine asks first (quitting stops them).
@@ -728,7 +755,7 @@ fn act_on(app: &AppHandle, text: &str) {
 /// words counts only when it's an instant command or "open X".
 fn worth_acting(text: &str) -> bool {
     let words = text.split_whitespace().filter(|w| w.chars().any(char::is_alphabetic)).count();
-    words > 2 || (words > 0 && (quick::parse(text).is_some() || launcher::parse_open(text).is_some()))
+    words > 2 || (words > 0 && (quick::parse(text).is_some() || quick::stop_all(text) || launcher::parse_open(text).is_some()))
 }
 
 /// Brings Engine up so its logo visibly listens, even from the tray. No focus steal and no "summon" (which could

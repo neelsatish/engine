@@ -7,14 +7,16 @@ UI tokens: [design-system/engine/MASTER.md](design-system/engine/MASTER.md).
 
 ## Layout
 
-- **Stage, across the top:** the Engine logo drawn in ASCII. It ripples in the Velvet Fold gradient with your voice
+- **Stage, top left:** the Engine logo drawn in ASCII. It ripples in the Velvet Fold gradient with your voice
   while you talk, then hands over to a thinking orb with what Engine is doing ("Sorting it out", "2 agents working").
   Briefing, Schedule and Settings open here too.
+- **Chat, down the right side:** a conversation with Engine. Your messages (typed or spoken) sit on the right; under
+  each, what Engine did: full answers, agents with their live step and a Stop button, their reports when done, and
+  approvals or tasks that need you, with Approve, Done and Dismiss right there. The composer at the bottom has the
+  folder, model, Local AI, mic and send controls.
 - **Tab rail, bottom left:** Home, Briefing (with a count of what needs you), Schedule, Settings, plus Review my day
   and Read aloud.
-- **Chat, bottom middle:** what Engine just did and heard, and the composer, with its folder, model, Local AI, mic
-  and send controls.
-- **System, bottom right:** CPU, RAM, GPU load, VRAM and GPU temperature, refreshed every two seconds while Engine is
+- **System, bottom middle:** CPU, RAM, GPU load, VRAM and GPU temperature, refreshed every two seconds while Engine is
   visible. CPU temperature needs admin rights on Windows, so it isn't shown.
 
 ## What works now
@@ -33,7 +35,8 @@ UI tokens: [design-system/engine/MASTER.md](design-system/engine/MASTER.md).
   - media keys: "pause", "next song", "previous";
   - volume: "volume up", "volume 30", "mute";
   - "play lofi on Spotify" and "play cooking videos on YouTube";
-  - "search the web for …" and "lock my pc".
+  - "search the web for …" and "lock my pc";
+  - "stop everything" (or "stop all processes", "never mind") ends running agents and stops Engine talking.
 - **Reminders:** "remind me in 20 minutes to stretch" or "remind me at 6pm to call mum" shows a Windows notification
   when it's due, and the reminder also appears in the Schedule.
 - **Clipboard:** dumps that mention what you copied ("summarize what I copied") get your clipboard text attached.

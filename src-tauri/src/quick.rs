@@ -36,6 +36,19 @@ fn clean(input: &str) -> String {
     s.strip_suffix(" please").unwrap_or(s).trim().to_string()
 }
 
+/// "Stop everything": Engine should end its running agents and stop talking. Handled in the core, since it needs
+/// Engine's own state rather than a key press.
+pub fn stop_all(input: &str) -> bool {
+    let s = clean(input).replace(['\u{2019}', '\''], "");
+    [
+        "stop", "stop it", "stop everything", "stop all", "stop all processes", "stop all tasks", "stop all agents",
+        "stop all jobs", "stop whatevers going on", "stop whatever is going on", "stop what youre doing",
+        "stop what you are doing", "cancel everything", "cancel all",
+        "cancel all tasks", "be quiet", "quiet", "shut up", "stop talking", "never mind", "nevermind",
+    ]
+    .contains(&s.as_str())
+}
+
 /// The text between `prefix` and `suffix` in `s`, if `s` has that shape and the middle isn't empty.
 fn between<'a>(s: &'a str, prefix: &str, suffix: &str) -> Option<&'a str> {
     let middle = s.strip_prefix(prefix)?.strip_suffix(suffix)?.trim();
@@ -203,6 +216,10 @@ mod tests {
         assert_eq!(parse("lock my pc"), Some(Quick::Lock));
         // Not quick commands: these go to the launcher or the router.
         assert_eq!(parse("open spotify"), None);
+        assert!(stop_all("Stop whatever’s going on."));
+        assert!(stop_all("Engine, stop all processes"));
+        assert!(!stop_all("stop the music")); // that's a media key, handled by parse
+        assert!(!stop_all("stop by the shop at 5"));
         assert_eq!(parse("play"), Some(Quick::Media(Media::PlayPause)));
         assert_eq!(parse("make me a playlist for studying"), None);
         assert_eq!(parse("research the best headphones"), None);

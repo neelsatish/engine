@@ -15,6 +15,9 @@ export type Item = {
   created: string;
   verdict: "" | "checking" | "good" | "concern";
   verdict_reason: string;
+  /// The dump it came from and what the person said there, so the chat can pair them.
+  dump: number | null;
+  said: string;
 };
 
 export type Target = { name: string; target: string };
@@ -44,6 +47,8 @@ export const engine = $state({
   level: 0,
   /// dumps being sorted right now
   sorting: 0,
+  /// typed messages sent but not answered yet, shown in the chat straight away
+  pending: [] as string[],
   /// what was just heard, newest last (acting while talking)
   heard: [] as { text: string; at: number }[],
   choices: [] as Target[],
@@ -80,6 +85,7 @@ export async function submit(text: string): Promise<Reply> {
   engine.note = "";
   engine.choices = [];
   engine.sorting++;
+  engine.pending = [...engine.pending, text];
   try {
     const reply = await invoke<Reply>("submit", { text });
     if (reply.kind === "choices") engine.choices = reply.items;
@@ -90,6 +96,8 @@ export async function submit(text: string): Promise<Reply> {
     return { kind: "error", message: String(e) };
   } finally {
     engine.sorting--;
+    engine.pending = engine.pending.filter((p, i) => i !== engine.pending.indexOf(text));
+    await loadItems(); // the reply's items, even if the "briefing" event raced ahead
   }
 }
 

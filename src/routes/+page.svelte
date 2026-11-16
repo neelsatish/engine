@@ -116,6 +116,7 @@
     </button>
   </header>
 
+  <div class="left">
   <section class="stage glass" class:flat={engine.view !== "home"} aria-label={TABS.find((t) => t.id === engine.view)?.label}>
     {#if engine.view === "home"}
       <StageHome />
@@ -149,10 +150,11 @@
       </div>
     </nav>
 
-    <Chat bind:this={chat} />
-
     <LoadPanel />
   </div>
+  </div>
+
+  <Chat bind:this={chat} />
 
   {#if quitting}
     <div class="confirm glass" role="alertdialog" aria-label="Quit Engine?">
@@ -171,14 +173,25 @@
     position: relative;
     z-index: 1;
     display: grid;
-    grid-template-rows: 44px minmax(0, 1fr) minmax(250px, 40%);
+    grid-template-rows: 44px minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) clamp(320px, 36%, 440px);
     gap: 12px;
     height: 100vh;
     padding: 0 16px 16px;
     border: 1px solid var(--border);
   }
 
+  /* The stage and the dock under it; the chat runs the full height beside them. */
+  .left {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) 212px;
+    gap: 12px;
+    min-width: 0;
+    min-height: 0;
+  }
+
   header {
+    grid-column: 1 / -1;
     display: flex;
     align-items: center;
     gap: var(--space-sm);
@@ -241,7 +254,7 @@
 
   .dock {
     display: grid;
-    grid-template-columns: 196px minmax(0, 1fr) 236px;
+    grid-template-columns: 180px minmax(0, 1fr);
     gap: 12px;
     min-height: 0;
   }
