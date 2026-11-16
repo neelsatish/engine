@@ -42,7 +42,14 @@ their names cut into thin borders.
   - volume: "volume up", "volume 30", "mute";
   - "play lofi on Spotify" and "play cooking videos on YouTube";
   - "search the web for …" and "lock my pc";
-  - "stop everything" (or "stop all processes", "never mind") ends running agents and stops Engine talking.
+  - "stop everything" (or "stop all processes") ends running agents; plain "stop", "quiet" or "never mind" only
+    stops Engine talking;
+  - "close Spotify", "quit Discord": closes an app gracefully (it can still ask to save);
+  - timers: "timer 10 minutes", "set a timer for 90 seconds" (said aloud when done, like reminders);
+  - small talk ("hi", "wsp", "thanks") gets an instant reply, and "clear the briefing" clears finished items.
+- **Speed tiers:** rules first (instant, no model), then the router. With Local AI on, Qwen3 8B sorts requests in
+  about 1.5 s instead of about 5 s for Claude through the CLI, except anything that sounds like sending, posting or
+  deleting, which Claude sorts.
 - **Reminders:** "remind me in 20 minutes to stretch" or "remind me at 6pm to call mum" shows a Windows notification
   when it's due, and the reminder also appears in the Schedule.
 - **Clipboard:** dumps that mention what you copied ("summarize what I copied") get your clipboard text attached.

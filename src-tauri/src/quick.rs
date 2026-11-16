@@ -55,6 +55,23 @@ pub fn hush(input: &str) -> bool {
         .contains(&s.as_str())
 }
 
+/// Small talk answered on the spot, with no model: "hi", "wsp", "thanks", "how are you".
+pub fn small_talk(input: &str) -> Option<&'static str> {
+    let s = clean(input).replace(['\u{2019}', '\''], "");
+    Some(match s.as_str() {
+        "hi" | "hey" | "hello" | "yo" | "hiya" | "hey there" | "hi there" => "Hello, sir. What can I do for you?",
+        "wsp" | "sup" | "whats up" | "wassup" | "whatsup" | "what up" => "Not much, sir. All systems running. What do you need?",
+        "how are you" | "how are you doing" | "hows it going" | "you good" => "Running smoothly, thank you. How can I help?",
+        "thanks" | "thank you" | "thanks engine" | "cheers" | "ty" | "thx" => "Anytime, sir.",
+        "good morning" => "Good morning, sir. Ready when you are.",
+        "good afternoon" => "Good afternoon, sir. What's next?",
+        "good evening" => "Good evening, sir. What can I do for you?",
+        "good night" | "goodnight" => "Good night, sir.",
+        "you there" | "are you there" | "you awake" => "Always, sir.",
+        _ => return None,
+    })
+}
+
 /// "Timer 10 minutes", "set a timer for 90 seconds", "5 minute timer": the minutes (rounded up), or None.
 pub fn timer(input: &str) -> Option<u32> {
     let s = clean(input);
@@ -272,6 +289,8 @@ mod tests {
         assert!(!stop_all("stop the music")); // that's a media key, handled by parse
         assert!(!stop_all("stop") && hush("Stop.") && hush("never mind")); // plain "stop" only silences Engine
         assert!(!stop_all("stop by the shop at 5"));
+        assert!(small_talk("wsp").is_some() && small_talk("What's up?").is_some() && small_talk("Thanks!").is_some());
+        assert!(small_talk("what's up with my build").is_none());
         assert_eq!(timer("timer 10 minutes"), Some(10));
         assert_eq!(timer("Engine, set a timer for 90 seconds"), Some(2));
         assert_eq!(timer("5 minute timer"), Some(5));

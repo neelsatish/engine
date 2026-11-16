@@ -92,6 +92,42 @@ pub fn recent(pairs: &[(String, String)]) -> String {
     pairs.iter().map(|(said, reply)| format!("Person: {}\nEngine: {}", cut(said, 300), cut(reply, 400))).collect::<Vec<_>>().join("\n")
 }
 
+/// Whether a dump talks about sending, posting, deleting or paying, so the stronger model should sort it.
+pub fn sounds_outward(dump: &str) -> bool {
+    let d = dump.to_lowercase();
+    ["send", "reply", "email", "message", "post", "tweet", "upload", "publish", "delete", "remove", "pay", "buy", "order", "share"]
+        .iter()
+        .any(|w| d.split(|c: char| !c.is_alphanumeric()).any(|x| x == *w))
+}
+
+/// Fixes the slips a small local router makes: a reply that starts with "Engine:", "Close Discord" as a name, a
+/// project the person never mentioned, and a reminder time that has already passed today (moved to tomorrow).
+/// `now` is "… YYYY-MM-DDTHH:MM"-style text from the store; `add_minutes` shifts a time.
+pub fn tidy(mut items: Vec<Item>, dump: &str, now: &str, add_minutes: impl Fn(&str, i64) -> Option<String>) -> Vec<Item> {
+    let said = dump.to_lowercase();
+    let now = now.split_whitespace().find(|w| w.len() >= 16 && w.as_bytes()[10] == b'T').map(|w| &w[..16]).unwrap_or("");
+    for item in &mut items {
+        if let Some(reply) = item.reply.as_mut() {
+            let trimmed = reply.trim_start().strip_prefix("Engine:").map(str::trim_start).unwrap_or(reply.trim_start()).to_string();
+            *reply = trimmed;
+        }
+        for verb in ["Close ", "Open ", "close ", "open "] {
+            if let Some(rest) = item.detail.strip_prefix(verb) {
+                if item.kind == Kind::Instant {
+                    item.detail = rest.to_string();
+                }
+            }
+        }
+        if item.project.as_deref().is_some_and(|p| !said.contains(&p.to_lowercase())) {
+            item.project = None;
+        }
+        if let Some(when) = item.when.as_deref().filter(|w| w.len() >= 16 && !now.is_empty() && &w[..16] < now) {
+            item.when = add_minutes(&when[..16], 24 * 60).or(item.when.clone());
+        }
+    }
+    items
+}
+
 pub fn parse(out: serde_json::Value) -> Result<Vec<Item>, String> {
     #[derive(Deserialize)]
     struct Out {
@@ -140,6 +176,24 @@ mod tests {
         assert!(parse(json!({"items": [{"kind": "other", "title": "x", "detail": "y"}]})).is_err());
         let chat = parse(json!({"items": [{"kind": "answer", "title": "Say hi", "detail": "wsp", "reply": "Not much! You?"}]}));
         assert_eq!(chat.unwrap()[0].reply.as_deref(), Some("Not much! You?"));
+    }
+
+    #[test]
+    fn tidies_small_model_slips() {
+        let out = json!({"items": [
+            {"kind": "answer", "title": "Hi", "detail": "wsp", "reply": "Engine: Not much!"},
+            {"kind": "instant", "title": "Close Discord", "detail": "Close Discord"},
+            {"kind": "job", "title": "Research", "detail": "headphones", "project": "my app"},
+            {"kind": "reminder", "title": "Call mum", "detail": "call mum", "when": "2026-11-16T18:00"}
+        ]});
+        let items = tidy(parse(out).unwrap(), "wsp, close discord, research headphones, remind me at 6", "Monday 2026-11-16T22:20", |t, _| {
+            Some(t.replace("16T", "17T"))
+        });
+        assert_eq!(items[0].reply.as_deref(), Some("Not much!"));
+        assert_eq!(items[1].detail, "Discord");
+        assert_eq!(items[2].project, None);
+        assert_eq!(items[3].when.as_deref(), Some("2026-11-17T18:00"));
+        assert!(sounds_outward("send Sam the notes") && !sounds_outward("what's the weather"));
     }
 
     #[test]

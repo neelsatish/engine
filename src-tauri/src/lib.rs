@@ -187,6 +187,11 @@ fn handle_dump(app: &AppHandle, text: &str) -> Reply {
     if let Some(t) = named_app(&engine, text, &aliases) {
         return open_reply(app, Some(dump), t);
     }
+    if let Some(reply) = quick::small_talk(text) {
+        log_err(engine.store().add_item(Some(dump), "answer", text, text, "done", reply));
+        changed(app);
+        return Reply::Routed { count: 1 };
+    }
     if let Some(minutes) = quick::timer(text) {
         let (now, _) = engine.store().now().map_err(|e| e.to_string()).unwrap_or_default();
         let at = engine.store().add_minutes(&now, minutes as i64).unwrap_or_default();
@@ -250,10 +255,13 @@ fn handle_dump(app: &AppHandle, text: &str) -> Reply {
         .flatten()
         .filter(|c| !c.trim().is_empty())
         .map(|c| c.chars().take(20_000).collect::<String>());
-    let items = match ai::ask_any(&engine.work_dir, router::MODEL, router::SYSTEM, &prompt, Some(router::SCHEMA), engine.settings().local_ai)
+    // Local AI sorts (about 3x faster than Claude), except anything that might send, post or delete: Claude
+    // sorts those, since a misread outward request would become an agent that can act.
+    let local = engine.settings().local_ai && !router::sounds_outward(text);
+    let items = match ai::ask_any(&engine.work_dir, router::MODEL, router::SYSTEM, &prompt, Some(router::SCHEMA), local)
         .and_then(router::parse)
     {
-        Ok(items) => items,
+        Ok(items) => router::tidy(items, text, &now, |t, m| engine.store().add_minutes(t, m).ok()),
         Err(message) => return Reply::Error { message },
     };
     let count = items.len();
@@ -1491,8 +1499,9 @@ pub fn run() {
             // Local AI left on last time: make sure Ollama is running (the model loads on first use).
             if app.state::<Engine>().settings().local_ai {
                 std::thread::spawn(|| {
-                    if let Err(e) = ai::start_local() {
-                        eprintln!("local AI: {e}");
+                    match ai::start_local() {
+                        Ok(_) => ai::warm_local(), // load the model now: a cold first call takes ~9 s
+                        Err(e) => eprintln!("local AI: {e}"),
                     }
                 });
             }
