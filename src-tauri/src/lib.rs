@@ -401,6 +401,31 @@ fn cancel(id: i64, app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Quit from the tray. With agents still working, Engine asks first (quitting stops them).
+fn quit(app: &AppHandle) {
+    let running = app.state::<Engine>().jobs.lock().unwrap().len();
+    if running == 0 {
+        app.exit(0);
+    } else {
+        show(app);
+        let _ = app.emit("confirm-quit", running);
+    }
+}
+
+/// Stops every running agent, then quits.
+#[tauri::command]
+fn quit_now(app: AppHandle) {
+    let engine = app.state::<Engine>();
+    let running: Vec<(i64, u32)> = engine.jobs.lock().unwrap().iter().map(|(&id, &pid)| (id, pid)).collect();
+    for (id, pid) in running {
+        log_err(engine.store().finish(id, "failed", "Stopped when Engine quit. Retry to run it again."));
+        if pid != 0 {
+            kill_tree(pid);
+        }
+    }
+    app.exit(0);
+}
+
 /// Ends an agent and everything it started.
 fn kill_tree(pid: u32) {
     let mut cmd = std::process::Command::new("taskkill");
@@ -775,7 +800,7 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, e| match e.id.as_ref() {
                     "show" => show(app),
-                    "quit" => app.exit(0),
+                    "quit" => quit(app),
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, e| {
@@ -809,6 +834,7 @@ pub fn run() {
             revise,
             task_done,
             review_day,
+            quit_now,
             voice_start,
             voice_stop,
             speak_briefing,

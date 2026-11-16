@@ -25,6 +25,8 @@
   let update = $state.raw<Update | null>(null);
   let updating = $state(false);
   let note = $state("");
+  // Set when Quit is chosen while agents are working: how many would be stopped.
+  let quitting = $state(0);
 
   const dateLabel = () => new Date().toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
   let today = $state(dateLabel());
@@ -77,11 +79,13 @@
   }
 
   onMount(() => {
+    const offQuit = listen<number>("confirm-quit", (e) => (quitting = e.payload));
     const off = listen("summon", summon);
     lookForUpdate();
     const timer = setInterval(lookForUpdate, 6 * 60 * 60 * 1000);
     return () => {
       off.then((f) => f());
+      offQuit.then((f) => f());
       clearInterval(timer);
     };
   });
@@ -116,6 +120,17 @@
     <Schedule />
   {:else}
     <Settings onEditAliases={editAliases} />
+  {/if}
+
+  {#if quitting}
+    <div class="confirm glass" role="alertdialog" aria-label="Quit Engine?">
+      <span>
+        {quitting === 1 ? "An agent is" : `${quitting} agents are`} still working. Quitting stops
+        {quitting === 1 ? "it" : "them"}; you can retry later.
+      </span>
+      <button class="button primary" onclick={() => invoke("quit_now")}>Quit and stop</button>
+      <button class="button" onclick={() => (quitting = 0)}>Keep working</button>
+    </div>
   {/if}
 
   <footer>
@@ -240,6 +255,20 @@
     border-top: 1px solid var(--border);
     color: var(--text-muted);
     font-size: 12px;
+  }
+
+  .confirm {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    margin-bottom: var(--space-sm);
+    padding: var(--space-sm) var(--space-md);
+    border-color: rgb(242 184 92 / 0.5);
+    font-size: 13px;
+  }
+
+  .confirm span {
+    flex: 1;
   }
 
   .note {
