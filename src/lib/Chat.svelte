@@ -176,26 +176,23 @@
   </div>
 {/snippet}
 
-<section class="chat glass" aria-label="Chat">
-  <div class="chat-head">
-    <h2 class="label">Chat</h2>
-    <button class="link" onclick={() => (engine.view = "briefing")}>Briefing</button>
-  </div>
-
+<fieldset class="pane chat" aria-label="Chat">
+  <legend><sup>4</sup>chat</legend>
+  <div class="screen">
   <div class="thread" bind:this={thread} aria-live="polite">
     {#each turns as t (t.key)}
-      {#if t.said}<div class="you"><p>{t.said}</p></div>{/if}
+      {#if t.said}<div class="you"><span class="prompt" aria-hidden="true">❯</span><p>{t.said}</p></div>{/if}
       {#each t.items as i (i.id)}
         {#if i.kind === "instant"}
           <div class="act" class:warn={i.status === "failed"}>
-            <span class="dot {i.status === 'failed' ? 'warn' : 'ok'}" aria-hidden="true"></span>
+            <span class="mark" aria-hidden="true">{i.status === "failed" ? "✗" : "✓"}</span>
             <span>{i.result || i.title}</span>
           </div>
         {:else if i.kind === "answer"}
           {#if i.status === "running"}
             <div class="act"><Orb process="thinking" size={16} /><span>Thinking…</span></div>
           {:else if i.status === "failed"}
-            <div class="act warn"><span class="dot warn" aria-hidden="true"></span><span>{i.result || "Couldn't answer that."}</span></div>
+            <div class="act warn"><span class="mark" aria-hidden="true">✗</span><span>{i.result || "Couldn't answer that."}</span></div>
           {:else}
             {@render reply(i)}
           {/if}
@@ -205,7 +202,7 @@
               {#if i.status === "queued" || i.status === "running"}
                 <Orb process={stepOrb(i)} size={16} />
               {:else}
-                <span class="dot {i.status === 'failed' ? 'warn' : 'ok'}" aria-hidden="true"></span>
+                <span class="mark" class:bad={i.status === "failed"} aria-hidden="true">{i.status === "failed" ? "✗" : "✓"}</span>
               {/if}
               <span class="job-title">{i.title}</span>
               <span class="state">
@@ -249,7 +246,7 @@
     {/each}
 
     {#each waiting as w, n (n)}
-      <div class="you"><p>{w}</p></div>
+      <div class="you"><span class="prompt" aria-hidden="true">❯</span><p>{w}</p></div>
     {/each}
     {#if engine.sorting > 0}
       <div class="act"><Orb process="thinking" size={16} /><span>Working out what to do…</span></div>
@@ -257,8 +254,8 @@
 
     {#if !turns.length && !waiting.length}
       <div class="empty">
-        <p>Ask a question or hand Engine a job.</p>
-        <p class="hint">“Open Spotify”, “what's on today?”, “draft a reply to the email from…”. Or hold <kbd>`</kbd>, or say “Engine”.</p>
+        <p>engine ready. ask a question or hand it a job.</p>
+        <p class="hint">try: open spotify · what's on today? · draft a reply to the email from…</p>
       </div>
     {/if}
   </div>
@@ -279,16 +276,19 @@
     }}
   >
     <div class="field">
-      <textarea
-        id="dump"
-        aria-label="Message Engine"
-        bind:this={input}
-        bind:value={text}
-        onkeydown={onInputKey}
-        rows="2"
-        placeholder="Ask or tell Engine anything…"
-        spellcheck="false"
-      ></textarea>
+      <div class="line">
+        <label class="ps1" for="dump">engine <span>❯</span></label>
+        <textarea
+          id="dump"
+          aria-label="Message Engine"
+          bind:this={input}
+          bind:value={text}
+          onkeydown={onInputKey}
+          rows="2"
+          placeholder="ask or tell engine anything…"
+          spellcheck="false"
+        ></textarea>
+      </div>
       <div class="tools">
         <div class="chips-left">
           <div class="menu-wrap">
@@ -375,41 +375,61 @@
       </div>
     </div>
     {#if note}
-      <p class="status" aria-live="polite"><span class="dot warn" aria-hidden="true"></span>{note}</p>
+      <p class="status" aria-live="polite"><span class="mark bad" aria-hidden="true">!</span>{note}</p>
     {/if}
   </form>
-</section>
+  </div>
+</fieldset>
 
 <style>
   .chat {
     display: flex;
     flex-direction: column;
-    min-height: 0;
-    min-width: 0;
-    padding: 10px 12px 12px;
+    padding: 4px 8px 8px;
   }
 
-  .chat-head {
+  /* An old CRT: a curved, bezelled screen with scanlines, a vignette and a faint glow on the text. */
+  .screen {
+    position: relative;
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0 2px 6px;
+    flex: 1;
+    flex-direction: column;
+    min-height: 0;
+    padding: 12px 14px 12px;
+    border-radius: 18px / 22px;
+    background: radial-gradient(ellipse 120% 90% at 50% 38%, #1b1733 0%, #110e1f 55%, #07060c 100%);
+    box-shadow:
+      inset 0 0 0 1px rgb(185 187 255 / 0.12),
+      inset 0 0 48px rgb(0 0 0 / 0.85),
+      0 0 0 5px #0b0912,
+      0 0 0 6px var(--pane-border),
+      0 0 26px rgb(142 144 245 / 0.12);
+    margin: 6px;
+    text-shadow: 0 0 6px rgb(185 187 255 / 0.32);
   }
 
-  .chat-head .label {
-    margin: 0;
+  .screen::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    border-radius: inherit;
+    background:
+      repeating-linear-gradient(to bottom, rgb(255 255 255 / 0.028) 0 1px, transparent 1px 3px),
+      radial-gradient(ellipse at 50% 45%, transparent 60%, rgb(0 0 0 / 0.5) 100%);
+    pointer-events: none;
   }
 
   .thread {
     display: flex;
     flex: 1;
     flex-direction: column;
-    gap: 8px;
+    gap: 6px;
     min-height: 0;
-    padding: 4px 2px 10px;
+    padding: 0 2px 10px;
     overflow-y: auto;
     scrollbar-width: thin;
-    scrollbar-color: var(--border) transparent;
+    scrollbar-color: var(--pane-border) transparent;
     font-size: 13px;
     line-height: 1.5;
     user-select: text;
@@ -417,17 +437,18 @@
 
   .you {
     display: flex;
-    justify-content: flex-end;
-    margin-top: 6px;
+    gap: 8px;
+    margin-top: 8px;
+  }
+
+  .prompt {
+    flex-shrink: 0;
+    color: var(--accent);
   }
 
   .you p {
-    max-width: 85%;
     margin: 0;
-    padding: 7px 11px;
-    border-radius: var(--r-md) var(--r-md) 4px var(--r-md);
-    background: color-mix(in oklab, var(--accent), transparent 78%);
-    color: var(--text);
+    color: #f4f2ff;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
   }
@@ -436,16 +457,29 @@
     display: flex;
     align-items: center;
     gap: 8px;
+    padding-left: 2ch;
     color: var(--text-secondary);
   }
 
+  .mark {
+    flex-shrink: 0;
+    width: 1.5ch;
+    color: var(--success);
+    text-align: center;
+  }
+
+  .mark.bad,
+  .act.warn .mark {
+    color: var(--meter-hi);
+  }
+
   .act.warn {
-    color: var(--warning, #f2b85c);
+    color: #f6a3b3;
   }
 
   .reply {
-    padding: 2px 2px 0;
-    color: var(--text);
+    padding: 0 0 0 2ch;
+    color: var(--text-secondary);
     overflow-wrap: anywhere;
   }
 
@@ -455,7 +489,12 @@
 
   .reply p.head {
     margin-top: 6px;
-    font-weight: 600;
+    color: var(--pane-label);
+  }
+
+  .reply strong {
+    color: var(--text);
+    font-weight: 500;
   }
 
   .reply p.bullet {
@@ -464,32 +503,35 @@
   }
 
   .reply p.bullet::before {
-    content: "";
+    content: "·";
     position: absolute;
-    top: 0.65em;
-    left: 3px;
-    width: 4px;
-    height: 4px;
-    border-radius: 50%;
-    background: var(--accent);
+    left: 2px;
+    color: var(--accent);
   }
 
   .job {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    padding: 9px 11px;
-    border: 1px solid var(--border);
+    gap: 5px;
+    margin-left: 2ch;
+    padding: 7px 10px;
+    border: 1px solid var(--pane-border);
+    border-left: 2px solid var(--accent);
     border-radius: var(--r-md);
-    background: var(--surface-2);
+    background: rgb(142 144 245 / 0.05);
+  }
+
+  .job .reply {
+    padding-left: 0;
   }
 
   .job.failed {
-    border-color: rgb(242 184 92 / 0.45);
+    border-left-color: var(--meter-hi);
   }
 
   .job.ask {
-    border-color: color-mix(in oklab, var(--accent), transparent 45%);
+    border-left-color: #c9a3f5;
+    background: rgb(201 163 245 / 0.07);
   }
 
   .job-head {
@@ -503,7 +545,6 @@
     flex: 1;
     min-width: 0;
     color: var(--text);
-    font-weight: 600;
     overflow-wrap: anywhere;
   }
 
@@ -568,27 +609,38 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-    padding: 10px 10px 8px;
-    border: 1px solid var(--border);
-    border-radius: var(--r-lg);
-    background: rgb(14 12 21 / 0.55);
-    transition: border-color var(--ease), box-shadow var(--ease);
+    padding-top: 10px;
+    border-top: 1px dashed rgb(58 53 102 / 0.8);
   }
 
-  .field:focus-within {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 3px rgb(142 144 245 / 0.14);
+  .line {
+    display: flex;
+    gap: 8px;
+  }
+
+  .ps1 {
+    flex-shrink: 0;
+    color: var(--pane-label);
+    font-size: 13px;
+    line-height: 1.45;
+  }
+
+  .ps1 span {
+    color: var(--accent);
   }
 
   textarea {
+    flex: 1;
     resize: none;
     border: 0;
     outline: 0;
     background: transparent;
-    color: var(--text);
+    color: #f4f2ff;
+    caret-color: var(--accent);
     font: inherit;
-    font-size: 14px;
+    font-size: 13px;
     line-height: 1.45;
+    text-shadow: inherit;
     user-select: text;
   }
 

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import "@fontsource-variable/inter";
+  import "@fontsource-variable/jetbrains-mono";
   import "../app.css";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
@@ -15,14 +15,15 @@
   import Schedule from "$lib/Schedule.svelte";
   import Settings from "$lib/Settings.svelte";
   import StageHome from "$lib/StageHome.svelte";
-  import { engine, needsYou, startListeners, type View } from "$lib/state.svelte";
+  import Wordmark from "$lib/Wordmark.svelte";
+  import { engine, needsYou, running, startListeners, type View } from "$lib/state.svelte";
 
-  // Each icon is a list of paths for a 24-unit stroke icon.
-  const TABS: { id: View; label: string; icon: string[] }[] = [
-    { id: "home", label: "Home", icon: ["M4 11l8-7 8 7", "M6 9.5V20h12V9.5"] },
-    { id: "briefing", label: "Briefing", icon: ["M5 5h14v14H5z", "M8 9h8", "M8 13h8", "M8 17h5"] },
-    { id: "schedule", label: "Schedule", icon: ["M4 6h16v14H4z", "M4 10h16", "M8 3v5", "M16 3v5"] },
-    { id: "settings", label: "Settings", icon: ["M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z", "M19 12a7 7 0 0 0-.1-1.2l2-1.6-2-3.4-2.4 1a7 7 0 0 0-2-1.2L14 3h-4l-.5 2.6a7 7 0 0 0-2 1.2l-2.4-1-2 3.4 2 1.6a7 7 0 0 0 0 2.4l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 2 1.2L10 21h4l.5-2.6a7 7 0 0 0 2-1.2l2.4 1 2-3.4-2-1.6c.1-.4.1-.8.1-1.2z"] },
+  // The views, like workspaces in a tiling desktop: Alt+1..4 switches between them.
+  const VIEWS: { id: View; label: string }[] = [
+    { id: "home", label: "home" },
+    { id: "briefing", label: "briefing" },
+    { id: "schedule", label: "schedule" },
+    { id: "settings", label: "settings" },
   ];
 
   let chat = $state<Chat>();
@@ -31,12 +32,15 @@
   // Set when Quit is chosen while agents are working: how many would be stopped.
   let quitting = $state(0);
   const asks = $derived(needsYou().length);
+  const agents = $derived(running().length);
+  const v = $derived((engine.prefs?.voice ?? {}) as Record<string, unknown>);
 
-  const dateLabel = () => new Date().toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
-  let today = $state(dateLabel());
+  const clock = () =>
+    new Date().toLocaleString(undefined, { weekday: "long", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  let now = $state(clock());
 
   async function summon() {
-    today = dateLabel();
+    now = clock();
     await tick();
     chat?.focus();
     if (engine.prefs?.voice.speak_on_summon) invoke("speak_briefing").catch(() => {});
@@ -78,6 +82,10 @@
 
   function onKey(e: KeyboardEvent) {
     if (e.key === "Escape") getCurrentWindow().hide();
+    if (e.altKey && e.key >= "1" && e.key <= "4") {
+      e.preventDefault();
+      engine.view = VIEWS[Number(e.key) - 1].id;
+    }
   }
 
   onMount(() => {
@@ -85,11 +93,13 @@
     const offs = [listen("summon", summon), listen<number>("confirm-quit", (e) => (quitting = e.payload))];
     lookForUpdate();
     const timer = setInterval(lookForUpdate, 6 * 60 * 60 * 1000);
+    const ticker = setInterval(() => (now = clock()), 15_000);
     chat?.focus();
     return () => {
       stop();
       offs.forEach((off) => off.then((f) => f()));
       clearInterval(timer);
+      clearInterval(ticker);
     };
   });
 </script>
@@ -98,63 +108,56 @@
 
 <MatrixRain />
 
-<main>
+<main class:home={engine.view === "home"}>
   <header data-tauri-drag-region>
-    <div class="brand" data-tauri-drag-region>
-      <img class="mark" src="/logo.svg" alt="" width="20" height="20" />
-      <span class="name" data-tauri-drag-region>Engine</span>
-      <span class="date" data-tauri-drag-region>{today}</span>
-    </div>
-    {#if update}
-      <button class="button primary update-pill" onclick={installUpdate} disabled={updating} title="Restart Engine on version {update.version}">
-        {#if updating}<Orb process="updating" size={14} />{/if}
-        {updating ? "Updating…" : `Update to ${update.version}`}
-      </button>
-    {/if}
-    <button class="icon-btn" aria-label="Hide Engine" title="Hide (Esc)" onclick={() => getCurrentWindow().hide()}>
-      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14" /></svg>
-    </button>
-  </header>
-
-  <div class="left">
-  <section class="stage glass" class:flat={engine.view !== "home"} aria-label={TABS.find((t) => t.id === engine.view)?.label}>
-    {#if engine.view === "home"}
-      <StageHome />
-    {:else if engine.view === "briefing"}
-      <div class="view"><Briefing /></div>
-    {:else if engine.view === "schedule"}
-      <div class="view"><Schedule /></div>
-    {:else}
-      <div class="view"><Settings onEditAliases={() => quick("edit_aliases", "Couldn't open shortcuts")} /></div>
-    {/if}
-  </section>
-
-  <div class="dock">
-    <nav class="rail glass" aria-label="Views">
-      {#each TABS as t (t.id)}
-        <button class="rail-item" aria-current={engine.view === t.id ? "page" : undefined} onclick={() => (engine.view = t.id)}>
-          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true">{#each t.icon as d (d)}<path {d} />{/each}</svg>
-          <span>{t.label}</span>
-          {#if t.id === "briefing" && asks}<span class="count">{asks}</span>{/if}
+    <nav class="spaces" aria-label="Views">
+      {#each VIEWS as view, n (view.id)}
+        <button
+          class="space"
+          aria-current={engine.view === view.id ? "page" : undefined}
+          title="{view.label} (Alt+{n + 1})"
+          onclick={() => (engine.view = view.id)}
+        >
+          {n + 1}<span class="space-name">{view.label}</span>{#if view.id === "briefing" && asks}<span class="flag">{asks}</span>{/if}
         </button>
       {/each}
-      <div class="rail-actions">
-        <button class="icon-btn" aria-label="Review my day" title="Review my day" onclick={() => quick("review_day", "Couldn't start the review")}>
-          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9" /></svg>
-        </button>
-        <button class="icon-btn" aria-label="Read the briefing aloud" title="Read the briefing aloud" onclick={() => quick("speak_briefing", "Couldn't read the briefing")}>
-          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"
-            ><path d="M11 5 6 9H3v6h3l5 4z" /><path d="M15.5 8.5a5 5 0 0 1 0 7" /><path d="M18.5 5.5a9 9 0 0 1 0 13" /></svg
-          >
-        </button>
-      </div>
     </nav>
+    <span class="clock" data-tauri-drag-region>{now}</span>
+    <div class="tray" data-tauri-drag-region>
+      {#if agents}<span class="ind" title="Agents working"><Orb process="working" size={12} />{agents}</span>{/if}
+      <span class="ind" class:on={engine.voice === "listening"} title="Microphone">
+        {engine.voice === "listening" ? "● rec" : v.wake === false ? "mic" : "wake"}
+      </span>
+      <span class="ind" class:on={engine.prefs?.local_ai} title="Where Engine thinks">{engine.prefs?.local_ai ? "local" : "cloud"}</span>
+      {#if update}
+        <button class="ind update" onclick={installUpdate} disabled={updating} title="Restart Engine on version {update.version}">
+          {updating ? "updating…" : `↑ ${update.version}`}
+        </button>
+      {/if}
+      <button class="ind hide" aria-label="Hide Engine" title="Hide (Esc)" onclick={() => getCurrentWindow().hide()}>—</button>
+    </div>
+  </header>
 
-    <LoadPanel />
-  </div>
-  </div>
+  {#if engine.view === "home"}
+    <div class="sys"><LoadPanel /></div>
+    <div class="fetch"><StageHome /></div>
+  {:else}
+    <fieldset class="pane view">
+      <legend><sup>1</sup>{engine.view}</legend>
+      <div class="view-body">
+        {#if engine.view === "briefing"}
+          <Briefing />
+        {:else if engine.view === "schedule"}
+          <Schedule />
+        {:else}
+          <Settings onEditAliases={() => quick("edit_aliases", "Couldn't open shortcuts")} />
+        {/if}
+      </div>
+    </fieldset>
+  {/if}
 
-  <Chat bind:this={chat} />
+  <div class="word"><Wordmark /></div>
+  <div class="talk"><Chat bind:this={chat} /></div>
 
   {#if quitting}
     <div class="confirm glass" role="alertdialog" aria-label="Quit Engine?">
@@ -173,142 +176,145 @@
     position: relative;
     z-index: 1;
     display: grid;
-    grid-template-rows: 44px minmax(0, 1fr);
-    grid-template-columns: minmax(0, 1fr) clamp(320px, 36%, 440px);
-    gap: 12px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: 26px minmax(0, 0.82fr) minmax(0, 1.18fr);
+    grid-template-areas:
+      "bar  bar"
+      "view word"
+      "view talk";
+    gap: 8px;
     height: 100vh;
-    padding: 0 16px 16px;
-    border: 1px solid var(--border);
+    padding: 0 8px 8px;
+    border: 1px solid var(--pane-border);
   }
 
-  /* The stage and the dock under it; the chat runs the full height beside them. */
-  .left {
+  main.home {
+    grid-template-areas:
+      "bar   bar"
+      "sys   word"
+      "fetch talk";
+  }
+
+  main > div {
     display: grid;
-    grid-template-rows: minmax(0, 1fr) 212px;
-    gap: 12px;
     min-width: 0;
     min-height: 0;
   }
 
-  header {
-    grid-column: 1 / -1;
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
+  .sys {
+    grid-area: sys;
   }
 
-  .brand {
-    display: flex;
-    flex: 1;
-    align-items: center;
-    gap: 10px;
-    min-width: 0;
+  .fetch {
+    grid-area: fetch;
   }
 
-  .mark {
-    display: block;
-    pointer-events: none;
+  .word {
+    grid-area: word;
   }
 
-  .name {
-    font-weight: 650;
-    letter-spacing: 0.01em;
-  }
-
-  .date {
-    overflow: hidden;
-    color: var(--text-muted);
-    font-size: 13px;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-  }
-
-  .date::before {
-    content: "·";
-    margin-right: 10px;
-  }
-
-  .update-pill {
-    height: 28px;
-    padding: 0 12px;
-  }
-
-  .stage {
-    position: relative;
-    min-height: 0;
-    overflow: hidden;
-  }
-
-  /* The other views bring their own panels: the stage steps back to a plain frame. */
-  .stage.flat {
-    background: rgb(14 12 21 / 0.35);
+  .talk {
+    grid-area: talk;
   }
 
   .view {
+    grid-area: view;
     display: flex;
     flex-direction: column;
-    height: 100%;
-    min-height: 0;
-    padding: 14px 16px 0;
   }
 
-  .dock {
+  .view-body {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-height: 0;
+    padding-top: 4px;
+  }
+
+  /* The top bar, like a tiling desktop's status bar. */
+  header {
+    grid-area: bar;
     display: grid;
-    grid-template-columns: 180px minmax(0, 1fr);
-    gap: 12px;
-    min-height: 0;
-  }
-
-  .rail {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding: 8px;
-  }
-
-  .rail-item {
-    display: flex;
+    grid-template-columns: 1fr auto 1fr;
     align-items: center;
-    gap: 10px;
-    height: 36px;
-    padding: 0 10px;
+    font-size: 12px;
+  }
+
+  .spaces {
+    display: flex;
+    gap: 2px;
+  }
+
+  .space {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 20px;
+    padding: 0 7px;
     border: 0;
     border-radius: var(--r-sm);
     background: transparent;
     color: var(--text-muted);
-    font-size: 13px;
-    text-align: left;
-    transition: background-color var(--ease), color var(--ease);
+    font-size: 12px;
   }
 
-  .rail-item span:not(.count) {
-    flex: 1;
+  .space-name {
+    color: inherit;
   }
 
-  .rail-item svg {
-    width: 17px;
-    height: 17px;
-  }
-
-  .rail-item:hover {
+  .space:hover {
     color: var(--text);
   }
 
-  .rail-item[aria-current="page"] {
-    background: var(--surface-2);
-    color: var(--text);
+  .space[aria-current="page"] {
+    background: rgb(142 144 245 / 0.16);
+    color: var(--pane-label);
   }
 
-  .rail-item[aria-current="page"] svg {
-    color: var(--accent);
+  .flag {
+    padding: 0 4px;
+    border-radius: var(--r-sm);
+    background: rgb(240 113 138 / 0.2);
+    color: var(--meter-hi);
+    font-size: 10px;
   }
 
-  .rail-actions {
+  .clock {
+    color: var(--text-secondary);
+    white-space: nowrap;
+  }
+
+  .tray {
     display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 2px;
+  }
+
+  .ind {
+    display: inline-flex;
+    align-items: center;
     gap: 4px;
-    margin-top: auto;
-    padding-top: 6px;
-    border-top: 1px solid var(--line);
+    height: 20px;
+    padding: 0 7px;
+    border: 0;
+    border-radius: var(--r-sm);
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 11px;
+  }
+
+  .ind.on {
+    color: var(--pane-label);
+  }
+
+  button.ind:hover:not(:disabled) {
+    background: rgb(142 144 245 / 0.12);
+    color: var(--text);
+  }
+
+  .ind.update {
+    color: var(--success);
   }
 
   .confirm {

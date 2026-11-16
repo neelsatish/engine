@@ -389,7 +389,7 @@
 
   .head.today {
     color: var(--accent);
-    font-weight: 650;
+    font-weight: 500;
   }
 
   .grid {
@@ -466,7 +466,7 @@
 
   .b-title {
     overflow: hidden;
-    font-weight: 600;
+    font-weight: 500;
     text-overflow: ellipsis;
     white-space: nowrap;
   }

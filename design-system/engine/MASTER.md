@@ -13,6 +13,24 @@
 
 ---
 
+## Terminal tiles (v0.12, the user's direction; overrides older rules below where they differ)
+
+The user asked for Engine to look like an Omarchy desktop (btop, fastfetch, a CRT terminal) in the Velvet Fold
+colours. Rules:
+
+- **Type:** JetBrains Mono Variable everywhere (bundled with Fontsource), 13px body, 12px labels, 11px meta.
+  Weights 400 and 500 only; bold ruins a monospace face.
+- **Tiles:** `fieldset.pane` with a `legend` that cuts the 1px `--pane-border` (#3a3566) like btop; legends are
+  lowercase with a superscript number (¹ system, ² engine, ³ home, ⁴ chat). Background `--pane-bg`, corners 4px
+  (`--r-sm` 2px, `--r-md` 3px, `--r-lg` 4px). A focused tile's border warms toward the accent.
+- **Wordmark:** "ENGINE" in 6×7 pixel glyphs drawn as SVG cells, one Velvet gradient across the whole word, a
+  #2a2650 drop shadow, `crispEdges`. It ripples column by column only while listening.
+- **Meters:** 22 cells coloured by position (`--meter-lo` #6f7fc4, `--meter-mid` #8f92ee, `--meter-hi` #f0718a);
+  history graphs from ▁▂▃▄▅▆▇█ with a soft glow.
+- **CRT (chat only):** bezelled screen with an 18/22px radius, scanlines and a vignette as a non-interactive
+  overlay, a faint text glow. Prompt `engine ❯`; your lines start with ❯, results with ✓ or ✗.
+- Contrast: body text #c7c3dc to #f4f2ff on near-black stays above 7:1; muted #9f9ab8 is for meta only.
+
 ## Global Rules
 
 ### Color Palette

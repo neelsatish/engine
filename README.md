@@ -7,17 +7,23 @@ UI tokens: [design-system/engine/MASTER.md](design-system/engine/MASTER.md).
 
 ## Layout
 
-- **Stage, top left:** the Engine logo drawn in ASCII. It ripples in the Velvet Fold gradient with your voice
-  while you talk, then hands over to a thinking orb with what Engine is doing ("Sorting it out", "2 agents working").
-  Briefing, Schedule and Settings open here too.
-- **Chat, down the right side:** a conversation with Engine. Your messages (typed or spoken) sit on the right; under
-  each, what Engine did: full answers, agents with their live step and a Stop button, their reports when done, and
-  approvals or tasks that need you, with Approve, Done and Dismiss right there. The composer at the bottom has the
-  folder, model, Local AI, mic and send controls.
-- **Tab rail, bottom left:** Home, Briefing (with a count of what needs you), Schedule, Settings, plus Review my day
-  and Read aloud.
-- **System, bottom middle:** CPU, RAM, GPU load, VRAM and GPU temperature, refreshed every two seconds while Engine is
-  visible. CPU temperature needs admin rights on Windows, so it isn't shown.
+Engine looks like a tiled terminal desktop in the Velvet Fold colours: monospace everywhere, and four tiles with
+their names cut into thin borders.
+
+- **Top bar:** the views as numbered workspaces (`Alt+1` to `Alt+4`: home, briefing, schedule, settings), the date
+  and time, and what Engine is doing (agents running, the mic, cloud or local).
+- **¹ system:** CPU and GPU history graphs, cell meters for CPU, RAM, GPU, VRAM and GPU temperature (refreshed every
+  two seconds while Engine is visible), and Engine's agents listed like processes. CPU temperature needs admin
+  rights on Windows, so it isn't shown.
+- **² engine:** the ENGINE wordmark in pixel letters (it ripples while you talk) over a menu you can drive with the
+  arrow keys and Enter, including Review my day and Read aloud.
+- **³ home:** the V8 logo in ASCII beside Engine's stats, like fastfetch: models, cloud or local, voice, wake word,
+  folder and today's tasks, with what Engine is doing under the logo. Briefing, Schedule and Settings take over the
+  whole left side when opened.
+- **⁴ chat:** a CRT screen with the conversation. You can just chat ("what's up", quick questions, follow-ups that
+  build on what was said), or hand Engine jobs. Under each message is what Engine did: replies, agents with their
+  live step and a Stop button, their reports, and approvals or tasks with Approve, Done and Dismiss. The prompt at
+  the bottom has the folder, model, Local AI, mic and send controls.
 
 ## What works now
 

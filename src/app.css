@@ -22,12 +22,20 @@
   --space-lg: 24px;
   --space-xl: 32px;
 
+  /* Terminal tiles: dim violet 1px borders with the pane's name cut into the top edge, near-square corners. */
+  --pane-bg: rgb(10 8 17 / 0.88);
+  --pane-border: #3a3566;
+  --pane-label: #b9bbff;
+  --meter-lo: #6f7fc4;
+  --meter-mid: #8f92ee;
+  --meter-hi: #f0718a;
+
   /* One system (taste-skill): one radius scale, one control height, one easing, fixed motion timings. */
-  --r-sm: 8px; /* buttons, inputs, chips, tabs */
-  --r-md: 12px; /* menus, inner panels, code */
-  --r-lg: 16px; /* cards and the dump box */
+  --r-sm: 2px; /* buttons, inputs, chips, tabs */
+  --r-md: 3px; /* menus, inner panels, code */
+  --r-lg: 4px; /* panes and cards */
   --radius: var(--r-lg);
-  --h-control: 34px;
+  --h-control: 30px;
   --line: rgb(42 37 64 / 0.6); /* hairline between rows */
   --accent-hover: color-mix(in oklab, var(--accent), white 14%);
   --m-in: 150ms;
@@ -37,9 +45,10 @@
   --ease: var(--m-in) var(--curve);
 
   color-scheme: dark;
-  font-family: "Inter Variable", "Segoe UI Variable", system-ui, sans-serif;
-  font-size: 15px;
-  line-height: 1.5;
+  /* One monospace family everywhere, like a terminal. */
+  font-family: "JetBrains Mono Variable", "Cascadia Mono", Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.45;
   color: var(--text);
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
@@ -77,12 +86,43 @@ button {
 
 /* Shared pieces used by every view. */
 
-/* Panels over the background rain: translucent and blurred, so text never sits on the moving characters. */
+/* Panels over the background rain: dark and lightly blurred, so text never sits on the moving characters. */
 .glass {
-  background: var(--glass);
-  border: 1px solid var(--border);
+  background: var(--pane-bg);
+  border: 1px solid var(--pane-border);
   border-radius: var(--r-lg);
-  backdrop-filter: blur(14px);
+  backdrop-filter: blur(6px);
+}
+
+/* A terminal tile: a fieldset, so its legend (the pane's name) cuts the top border like btop. */
+fieldset.pane {
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 6px 12px 10px;
+  border: 1px solid var(--pane-border);
+  border-radius: var(--r-lg);
+  background: var(--pane-bg);
+  backdrop-filter: blur(6px);
+  transition: border-color var(--ease);
+}
+
+fieldset.pane:focus-within {
+  border-color: color-mix(in oklab, var(--pane-border), var(--accent) 55%);
+}
+
+fieldset.pane > legend {
+  margin-left: 6px;
+  padding: 0 6px;
+  color: var(--pane-label);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+
+fieldset.pane > legend sup {
+  margin-right: 2px;
+  color: var(--text-muted);
+  font-size: 10px;
 }
 
 .card {
@@ -98,7 +138,7 @@ button {
   gap: var(--space-sm);
   margin: 0 0 4px;
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 500;
   letter-spacing: 0;
   color: var(--text-secondary);
 }
@@ -203,7 +243,7 @@ svg.ico {
   border-color: transparent;
   background: var(--accent);
   color: var(--on-accent);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .button.primary:hover:not(:disabled) {

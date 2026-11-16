@@ -193,7 +193,15 @@ fn handle_dump(app: &AppHandle, text: &str) -> Reply {
     let shortcuts: Vec<String> = aliases.iter().map(|a| a.name.clone()).collect();
     let projects: Vec<String> = engine.settings().projects.into_iter().map(|p| p.name).collect();
     let now = engine.store().now().map(|n| n.1).unwrap_or_default();
-    let prompt = router::prompt(text, &shortcuts, &projects, &now);
+    // The last few exchanges, so a follow-up ("and tomorrow?") makes sense, like a normal chat.
+    let mut pairs: Vec<(String, String)> = log_err(engine.store().briefing())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|i| matches!(i.kind.as_str(), "answer" | "job") && i.status == "done" && !i.said.is_empty())
+        .map(|i| (i.said, i.result))
+        .collect();
+    pairs.drain(..pairs.len().saturating_sub(4));
+    let prompt = router::prompt(text, &shortcuts, &projects, &now, &router::recent(&pairs));
     // The clipboard goes straight to the answers and jobs that need it, rather than through the router.
     let clip = mentions_clipboard(text)
         .then(|| {
@@ -263,6 +271,12 @@ fn start(app: &AppHandle, engine: &Engine, dump: i64, aliases: &[Target], folder
                     add("failed", &format!("Couldn't find “{}”. Add it as a shortcut in Settings › General.", item.detail));
                 }
             }
+        }
+        // Small talk and quick questions: the router already wrote the reply, so it shows (and is said) at once.
+        Kind::Answer if item.reply.as_deref().is_some_and(|r| !r.trim().is_empty()) => {
+            let reply = item.reply.clone().unwrap_or_default().trim().to_string();
+            add("done", &reply);
+            tell(narrate::Line::Overview(narrate::overview(&reply)));
         }
         Kind::Answer => {
             let Some(id) = add("running", "") else { return };

@@ -222,7 +222,7 @@
       border: 1px solid var(--border);
       border-radius: 999px;
       font-size: 12px;
-      font-weight: 600;
+      font-weight: 500;
       vertical-align: 1px;
     }
 
