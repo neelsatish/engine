@@ -10,51 +10,66 @@
   type Reply =
     | { kind: "opened"; name: string }
     | { kind: "choices"; items: Target[] }
-    | { kind: "not_found"; query: string }
-    | { kind: "unsupported" }
+    | { kind: "routed"; count: number }
     | { kind: "error"; message: string };
-  type Tone = "ok" | "warn" | "muted";
-  type Entry = { id: number; text: string; tone: Tone; time: string };
+  type Item = {
+    id: number;
+    kind: "instant" | "answer" | "job" | "outward";
+    title: string;
+    status: "queued" | "running" | "held" | "done" | "failed";
+    result: string;
+    created: string;
+  };
 
   let text = $state("");
-  let busy = $state(false);
-  let entries = $state<Entry[]>([]);
+  let sorting = $state(0);
+  let note = $state("");
   let choices = $state<Target[]>([]);
+  let items = $state<Item[]>([]);
   let input: HTMLTextAreaElement;
-  let nextId = 0;
 
-  const clock = () => new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-  const log = (text: string, tone: Tone) =>
-    (entries = [{ id: nextId++, text, tone, time: clock() }, ...entries].slice(0, 50));
+  const now = $derived(items.filter((i) => i.kind === "instant"));
+  const running = $derived(items.filter((i) => i.kind !== "instant" && (i.status === "running" || i.status === "queued")));
+  const needsYou = $derived(items.filter((i) => i.kind !== "instant" && (i.status === "held" || i.status === "failed")));
+  const done = $derived(items.filter((i) => i.kind !== "instant" && i.status === "done"));
+  const sections = $derived(
+    [
+      { name: "Now", items: now },
+      { name: "Running", items: running },
+      { name: "Needs you", items: needsYou },
+      { name: "Done", items: done },
+    ].filter((s) => s.items.length),
+  );
 
-  function show(reply: Reply) {
+  async function load() {
+    try {
+      items = await invoke<Item[]>("briefing");
+    } catch (e) {
+      note = `Couldn't load the briefing: ${e}`;
+    }
+  }
+
+  function show(reply: Reply, said = "") {
     choices = [];
-    switch (reply.kind) {
-      case "opened":
-        return log(`Opened ${reply.name}`, "ok");
-      case "choices":
-        choices = reply.items;
-        return;
-      case "not_found":
-        return log(`Couldn't find “${reply.query}”. Add it under Edit aliases.`, "warn");
-      case "unsupported":
-        return log("Right now Engine can open apps and sites. Planning and agents come next.", "muted");
-      case "error":
-        return log(reply.message, "warn");
+    if (reply.kind === "choices") choices = reply.items;
+    if (reply.kind === "error") {
+      note = reply.message;
+      if (said && !text.trim()) text = said; // give the dump back so nothing is lost
     }
   }
 
   async function submit() {
     const said = text.trim();
-    if (!said || busy) return;
-    busy = true;
+    if (!said) return;
+    text = "";
+    note = "";
+    sorting++;
     try {
-      show(await invoke<Reply>("submit", { text: said }));
-      text = "";
+      show(await invoke<Reply>("submit", { text: said }), said);
     } catch (e) {
-      log(String(e), "warn");
+      show({ kind: "error", message: String(e) }, said);
     } finally {
-      busy = false;
+      sorting--;
       input.focus();
     }
   }
@@ -64,11 +79,19 @@
     input.focus();
   }
 
+  async function dismiss(id: number) {
+    try {
+      await invoke("dismiss", { id });
+    } catch (e) {
+      note = `Couldn't dismiss: ${e}`;
+    }
+  }
+
   async function editAliases() {
     try {
       await invoke("edit_aliases");
     } catch (e) {
-      log(`Couldn't open aliases: ${e}`, "warn");
+      note = `Couldn't open aliases: ${e}`;
     }
   }
 
@@ -83,10 +106,15 @@
     }
   }
 
+  const tone = (i: Item) =>
+    ({ done: "ok", failed: "warn", running: "live", held: "hold", queued: "muted" })[i.status];
+  const time = (i: Item) => i.created.slice(11, 16);
+
   onMount(() => {
     input.focus();
-    const off = listen("summon", () => input.focus());
-    return () => off.then((f) => f());
+    load();
+    const offs = [listen("summon", () => input.focus()), listen("briefing", load)];
+    return () => offs.forEach((off) => off.then((f) => f()));
   });
 </script>
 
@@ -118,13 +146,20 @@
         bind:value={text}
         onkeydown={onInputKey}
         rows="2"
-        placeholder="Tell Engine what to do. Try “open YouTube”."
+        placeholder="Dump anything: open an app, ask for a plan, hand off a task."
         spellcheck="false"
       ></textarea>
-      <button class="send" type="submit" aria-label="Send" disabled={busy || !text.trim()}>
+      <button class="send" type="submit" aria-label="Send" disabled={!text.trim()}>
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 10 4 15l5 5" /><path d="M20 4v7a4 4 0 0 1-4 4H4" /></svg>
       </button>
     </div>
+    <p class="status" aria-live="polite">
+      {#if sorting}
+        <span class="dot live" aria-hidden="true"></span>Sorting your dump…
+      {:else if note}
+        <span class="dot warn" aria-hidden="true"></span>{note}
+      {/if}
+    </p>
   </form>
 
   {#if choices.length}
@@ -138,22 +173,39 @@
     </section>
   {/if}
 
-  <section class="now" aria-live="polite">
-    <h2>Now</h2>
-    {#if entries.length}
-      <ul>
-        {#each entries as e (e.id)}
-          <li>
-            <span class="dot {e.tone}" aria-hidden="true"></span>
-            <span class="text">{e.text}</span>
-            <time>{e.time}</time>
-          </li>
-        {/each}
-      </ul>
+  <div class="briefing" aria-live="polite">
+    {#each sections as s (s.name)}
+      <section>
+        <h2>{s.name}</h2>
+        <ul>
+          {#each s.items as i (i.id)}
+            <li>
+              <span class="dot {tone(i)}" aria-hidden="true"></span>
+              <div class="body">
+                {#if i.kind === "instant"}
+                  <span class="text">{i.result || i.title}</span>
+                {:else if i.status === "done"}
+                  <details>
+                    <summary class="text">{i.title}</summary>
+                    <pre>{i.result}</pre>
+                  </details>
+                {:else}
+                  <span class="text">{i.title}</span>
+                  {#if i.result}<span class="sub">{i.result}</span>{/if}
+                {/if}
+              </div>
+              {#if i.kind !== "instant" && i.status !== "running" && i.status !== "done"}
+                <button class="link" onclick={() => dismiss(i.id)}>Dismiss</button>
+              {/if}
+              <time>{time(i)}</time>
+            </li>
+          {/each}
+        </ul>
+      </section>
     {:else}
-      <p class="empty">Nothing yet. Open an app or a site to start.</p>
-    {/if}
-  </section>
+      <p class="empty">Nothing yet today. Dump anything above.</p>
+    {/each}
+  </div>
 
   <footer>
     <span><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>Space</kbd> summon · <kbd>Esc</kbd> hide</span>
@@ -233,7 +285,7 @@
   }
 
   .dump {
-    margin: var(--space-sm) 0 var(--space-lg);
+    margin: var(--space-sm) 0 var(--space-md);
   }
 
   .field {
@@ -290,14 +342,27 @@
     cursor: default;
   }
 
+  .status {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-sm);
+    min-height: 20px;
+    margin: var(--space-sm) 0 0;
+    color: var(--text-muted);
+    font-size: 13px;
+    user-select: text;
+  }
+
   section {
     margin-bottom: var(--space-lg);
   }
 
-  .now {
+  .briefing {
     flex: 1;
     min-height: 0;
     overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
   }
 
   .choices {
@@ -350,9 +415,55 @@
   .dot.muted {
     background: var(--text-muted);
   }
+  .dot.hold {
+    background: var(--accent);
+  }
+  .dot.live {
+    background: var(--accent);
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    50% {
+      opacity: 0.3;
+    }
+  }
+
+  .body {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+  }
 
   .text {
-    flex: 1;
+    user-select: text;
+  }
+
+  .sub {
+    color: var(--text-muted);
+    font-size: 13px;
+    user-select: text;
+  }
+
+  summary {
+    cursor: pointer;
+  }
+
+  summary::marker {
+    color: var(--text-muted);
+  }
+
+  pre {
+    margin: var(--space-sm) 0 0;
+    padding: var(--space-md);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font: inherit;
+    font-size: 14px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
     user-select: text;
   }
 
@@ -386,11 +497,13 @@
   }
 
   .link {
+    flex-shrink: 0;
     padding: var(--space-xs) var(--space-sm);
     border: 0;
     border-radius: 6px;
     background: transparent;
     color: var(--text-muted);
+    font-size: 12px;
     transition: color var(--ease), background var(--ease);
   }
 
