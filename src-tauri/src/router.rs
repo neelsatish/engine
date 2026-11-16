@@ -44,11 +44,12 @@ pub const SYSTEM: &str = r#"You sort a person's brain dump for Engine, their des
 Kinds:
 - instant: open an app, website or folder on this PC. title: "Open <name>". detail: only the name, without "my" (for example "YouTube" or "Downloads folder"); use one of the person's shortcut names when one fits. url: the https URL when it is a website; leave it out for apps and folders.
 - answer: something a single written reply can fully deliver with no tools, no web, and none of the person's files or accounts: an explanation, a plan, ideas, a draft text. detail: the complete question with every fact the person gave, written so it stands alone.
-- job: work that needs tools: the person's files, projects, notes or documents, their email or other accounts, the web, or running code. detail: complete instructions for an AI agent that will do it, including the person's own words.
+- job: work that needs tools: the person's files, projects, notes or documents, their email or other accounts, the web, or running code. An AI agent does it on its own: it can search and read the web, read and write files, run commands, and open websites, apps and files when it finishes. detail: complete instructions for that agent, including the person's own words.
 - outward: anything other people will see or that cannot be undone: sending or replying to a message, posting, uploading, publishing, deleting, paying. detail: exactly what would happen.
 
 Rules:
 - "Draft" or "prepare" is never outward. Only the actual sending, posting or uploading is. If one request asks for both, make two items.
+- Work that ends in opening something ("find the best X and open it") is one job, not a job plus an instant item.
 - One item per distinct request. Do not invent, merge or skip requests. Ignore greetings such as "hey Engine".
 - title: a short imperative under 60 characters, in the person's language."#;
 

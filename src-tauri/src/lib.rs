@@ -1,4 +1,5 @@
 pub mod ai;
+pub mod jobs;
 pub mod launcher;
 pub mod router;
 pub mod store;
@@ -7,8 +8,9 @@ use launcher::{Match, Target};
 use router::Kind;
 use serde::Serialize;
 use std::{
+    collections::HashMap,
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Mutex, MutexGuard},
 };
 use store::Store;
@@ -23,8 +25,10 @@ struct Engine {
     apps: Mutex<Vec<Target>>,
     aliases_path: PathBuf,
     store: Mutex<Store>,
-    /// Where model calls run, so no project's Claude Code settings apply to them.
+    /// Where model calls run, so no project's Claude Code settings apply to them. Jobs get folders under it.
     work_dir: PathBuf,
+    /// Running jobs and their agent's process id (0 until it starts).
+    jobs: Mutex<HashMap<i64, u32>>,
 }
 
 impl Engine {
@@ -126,6 +130,7 @@ fn handle_dump(app: &AppHandle, text: &str) -> Reply {
     for item in items {
         start(app, &engine, dump, &aliases, item);
     }
+    pump(app);
     changed(app);
     Reply::Routed { count }
 }
@@ -165,15 +170,91 @@ fn start(app: &AppHandle, engine: &Engine, dump: i64, aliases: &[Target], item: 
                     Ok(reply) => ("done", reply.as_str().unwrap_or_default().trim().to_string()),
                     Err(e) => ("failed", e),
                 };
-                log_err(engine.store().set(id, status, &result));
+                log_err(engine.store().finish(id, status, &result));
                 changed(&app);
             });
         }
         Kind::Job => {
-            add("queued", "Waiting for agents, which arrive in the next update.");
+            add("queued", "");
         }
         Kind::Outward => {
             add("held", "Held for your approval. Approval cards arrive in a later update.");
+        }
+    }
+}
+
+/// Starts queued jobs while fewer than `jobs::MAX_RUNNING` are running.
+fn pump(app: &AppHandle) {
+    let engine = app.state::<Engine>();
+    loop {
+        let mut running = engine.jobs.lock().unwrap();
+        if running.len() >= jobs::MAX_RUNNING {
+            return;
+        }
+        let Some((id, dump, prompt)) = log_err(engine.store().claim_job()).flatten() else { return };
+        running.insert(id, 0);
+        drop(running);
+        let app = app.clone();
+        std::thread::spawn(move || run_job(&app, id, dump, &prompt));
+    }
+}
+
+fn run_job(app: &AppHandle, id: i64, dump: Option<i64>, prompt: &str) {
+    let engine = app.state::<Engine>();
+    let dir = engine.work_dir.join("jobs").join(id.to_string());
+    changed(app);
+    let outcome = fs::create_dir_all(&dir).map_err(|e| format!("Couldn't make the job folder: {e}")).and_then(|()| {
+        jobs::run(
+            &dir,
+            prompt,
+            |pid| {
+                engine.jobs.lock().unwrap().insert(id, pid);
+            },
+            |process, label| {
+                log_err(engine.store().set_activity(id, process, &label));
+                changed(app);
+            },
+        )
+    });
+    match outcome {
+        Ok(done) => {
+            let aliases = engine.aliases().unwrap_or_default();
+            for wanted in &done.open {
+                open_for_job(&engine, dump, &dir, wanted, &aliases);
+            }
+            let made = fs::read_dir(&dir).map_or(0, |d| d.flatten().filter(|f| f.file_name() != "agent-log.jsonl").count());
+            let saved = if made > 0 { format!("\n\nSaved in {}", dir.display()) } else { String::new() };
+            log_err(engine.store().finish(id, "done", &format!("{}{saved}", done.summary)));
+        }
+        Err(e) => {
+            log_err(engine.store().finish(id, "failed", &e));
+        }
+    }
+    engine.jobs.lock().unwrap().remove(&id);
+    changed(app);
+    pump(app);
+}
+
+/// Opens what a finished agent asked for: a web address, a file it made in its folder, or an app or alias by name.
+fn open_for_job(engine: &Engine, dump: Option<i64>, dir: &Path, wanted: &str, aliases: &[Target]) {
+    let target = if wanted.starts_with("https://") || wanted.starts_with("http://") {
+        Some(Target { name: jobs::host(wanted), target: wanted.to_string() })
+    } else if let Some(path) = jobs::own_file(dir, wanted) {
+        let name = path.file_name().map_or(wanted.to_string(), |f| f.to_string_lossy().into_owned());
+        Some(Target { name, target: path.to_string_lossy().into_owned() })
+    } else {
+        match engine.find(wanted, aliases) {
+            Match::One(t) => Some(t),
+            _ => None,
+        }
+    };
+    match target {
+        Some(t) => {
+            let _ = launch(engine, dump, &format!("Open {}", t.name), &t);
+        }
+        None => {
+            let msg = format!("An agent asked to open “{wanted}”, but Engine couldn't find it.");
+            log_err(engine.store().add_item(dump, "instant", &format!("Open {wanted}"), wanted, "failed", &msg));
         }
     }
 }
@@ -208,6 +289,38 @@ fn briefing(engine: State<Engine>) -> Result<Vec<store::Item>, String> {
 #[tauri::command]
 fn dismiss(id: i64, app: AppHandle) -> Result<(), String> {
     app.state::<Engine>().store().dismiss(id).map_err(|e| e.to_string())?;
+    changed(&app);
+    Ok(())
+}
+
+#[tauri::command]
+fn cancel(id: i64, app: AppHandle) -> Result<(), String> {
+    let engine = app.state::<Engine>();
+    if engine.store().cancel(id).map_err(|e| e.to_string())? {
+        if let Some(&pid) = engine.jobs.lock().unwrap().get(&id).filter(|&&pid| pid != 0) {
+            kill_tree(pid);
+        }
+    }
+    changed(&app);
+    Ok(())
+}
+
+/// Ends an agent and everything it started.
+fn kill_tree(pid: u32) {
+    let mut cmd = std::process::Command::new("taskkill");
+    cmd.args(["/PID", &pid.to_string(), "/T", "/F"]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let _ = cmd.status();
+}
+
+#[tauri::command]
+fn retry(id: i64, app: AppHandle) -> Result<(), String> {
+    app.state::<Engine>().store().retry(id).map_err(|e| e.to_string())?;
+    pump(&app);
     changed(&app);
     Ok(())
 }
@@ -259,7 +372,8 @@ pub fn run() {
             let work_dir = app.path().app_data_dir()?;
             fs::create_dir_all(&work_dir)?;
             let store = Mutex::new(Store::open(&work_dir.join("engine.db"))?);
-            app.manage(Engine { apps: Mutex::new(vec![]), aliases_path, store, work_dir });
+            app.manage(Engine { apps: Mutex::new(vec![]), aliases_path, store, work_dir, jobs: Mutex::default() });
+            pump(app.handle()); // jobs queued before Engine last closed
 
             // Build the app index in the background so the first "open X" is instant.
             let handle = app.handle().clone();
@@ -303,7 +417,7 @@ pub fn run() {
                 let _ = window.hide();
             }
         })
-        .invoke_handler(tauri::generate_handler![submit, open_choice, briefing, dismiss, edit_aliases])
+        .invoke_handler(tauri::generate_handler![submit, open_choice, briefing, dismiss, cancel, retry, edit_aliases])
         .run(tauri::generate_context!())
         .expect("error while running Engine");
 }

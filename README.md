@@ -5,7 +5,7 @@ A personal assistant for Windows that ties your AI tools together. Built with Ta
 Design: [docs/superpowers/specs/2026-11-16-engine-design.md](docs/superpowers/specs/2026-11-16-engine-design.md).
 UI tokens: [design-system/engine/MASTER.md](design-system/engine/MASTER.md).
 
-## What works now (phases 1 and 2)
+## What works now
 
 - Open apps, sites and folders: "open Opera", "hey Engine, open my Gmail", "launch Spotify".
   Engine knows every app in your Start menu. Sites and folders come from your aliases. A plain "open X" never
@@ -13,10 +13,22 @@ UI tokens: [design-system/engine/MASTER.md](design-system/engine/MASTER.md).
 - Dump anything else and Engine sorts it into items:
   - *instant*: opened right away;
   - *answer*: answered by Claude, shown under Done (click to expand);
-  - *job*: queued for agents (phase 3);
+  - *job*: handed to a background agent (see below);
   - *outward* (send, post, upload, delete): held under Needs you, never run (approvals are phase 4).
 - The briefing has four sections: Now, Running, Needs you, Done. There is one briefing per day, and unfinished items
   carry over to the next day. Dismiss removes an item.
+
+### Agents
+
+Each job runs as a headless Claude Code agent on Haiku, up to 3 at once (the rest queue). An agent works on its own:
+it searches and reads the web, reads and writes files, and runs commands. Running shows what it's doing right now,
+with an orb for the kind of step (thinking, viewing, searching, writing, working). When it finishes, its summary
+goes under Done and Engine opens anything it asked for: a website, an app or alias, or a file it made.
+
+Agents are draft-only. They're told never to send, post, upload, pay or `git push`, and Engine blocks the outward
+commands it knows about (`git push`, `gh`). That's best effort, not a sandbox. Each job gets its own folder under
+`%APPDATA%\com.engine.desktop\jobs\`, with the agent's full log in `agent-log.jsonl`. Cancel stops a running agent
+and everything it started; Retry re-runs a failed job.
 - `Ctrl+Shift+Space` shows or hides Engine from anywhere; `Esc` hides it.
 - Closing the window hides it to the tray. Quit from the tray icon's menu.
 

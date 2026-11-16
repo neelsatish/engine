@@ -20,6 +20,7 @@
     kind: "instant" | "answer" | "job" | "outward";
     title: string;
     status: "queued" | "running" | "held" | "done" | "failed";
+    process: string;
     result: string;
     created: string;
   };
@@ -84,11 +85,11 @@
     input.focus();
   }
 
-  async function dismiss(id: number) {
+  async function act(command: "dismiss" | "cancel" | "retry", id: number) {
     try {
-      await invoke("dismiss", { id });
+      await invoke(command, { id });
     } catch (e) {
-      note = `Couldn't dismiss: ${e}`;
+      note = `Couldn't ${command}: ${e}`;
     }
   }
 
@@ -138,7 +139,11 @@
   }
 
   // Work in progress shows an orb for what it's doing; finished items get a plain dot.
-  const ORB_FOR: Partial<Record<Item["status"], Process>> = { running: "writing", queued: "waiting", held: "held" };
+  // A running job shows the orb for its current step (viewing, searching, writing...); a running answer is writing.
+  const orbFor = (i: Item): Process | undefined =>
+    i.status === "running"
+      ? ((i.process || "writing") as Process)
+      : ({ queued: "waiting", held: "held" } as Partial<Record<Item["status"], Process>>)[i.status];
   const time = (i: Item) => i.created.slice(11, 16);
 
   onMount(() => {
@@ -159,7 +164,8 @@
 <main>
   <header data-tauri-drag-region>
     <div class="brand" data-tauri-drag-region>
-      <span class="mark" aria-hidden="true"></span>
+      <img class="mark" src="/logo.svg" alt="" width="20" height="20" />
+
       <span data-tauri-drag-region>Engine</span>
     </div>
     <button class="icon" aria-label="Hide Engine" title="Hide (Esc)" onclick={() => getCurrentWindow().hide()}>
@@ -215,7 +221,7 @@
         <h2>{s.name}</h2>
         <ul>
           {#each s.items as i (i.id)}
-            {@const process = ORB_FOR[i.status]}
+            {@const process = orbFor(i)}
             <li>
               <span class="indicator">
                 {#if process}
@@ -237,8 +243,13 @@
                   {#if i.result}<span class="sub">{i.result}</span>{/if}
                 {/if}
               </div>
-              {#if i.kind !== "instant" && i.status !== "running" && i.status !== "done"}
-                <button class="link" onclick={() => dismiss(i.id)}>Dismiss</button>
+              {#if i.kind === "job" && i.status === "running"}
+                <button class="link" onclick={() => act("cancel", i.id)}>Cancel</button>
+              {:else if i.kind !== "instant" && i.status !== "running" && i.status !== "done"}
+                {#if i.kind === "job" && i.status === "failed"}
+                  <button class="link" onclick={() => act("retry", i.id)}>Retry</button>
+                {/if}
+                <button class="link" onclick={() => act("dismiss", i.id)}>Dismiss</button>
               {/if}
               <time>{time(i)}</time>
             </li>
@@ -290,11 +301,8 @@
   }
 
   .mark {
-    width: 10px;
-    height: 10px;
-    border-radius: 3px;
-    background: var(--accent);
-    box-shadow: 0 0 12px rgb(249 115 22 / 0.5);
+    display: block;
+    pointer-events: none;
   }
 
   .icon {
