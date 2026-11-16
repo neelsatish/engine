@@ -35,10 +35,34 @@
   let revising = $state<number | null>(null);
   let today = $state<Block[]>([]);
   // The working folder and agent model, shown as chips in the dump box (saved in Settings).
-  type Prefs = { folder: string; recent: string[]; models: { agent: string; answer: string } };
-  let prefs = $state<Prefs & Record<string, unknown>>({ folder: "", recent: [], models: { agent: "haiku", answer: "sonnet" } });
+  type Prefs = { folder: string; recent: string[]; models: { agent: string; answer: string }; local_ai: boolean };
+  let prefs = $state<Prefs & Record<string, unknown>>({
+    folder: "",
+    recent: [],
+    models: { agent: "haiku", answer: "sonnet" },
+    local_ai: false,
+  });
   let folderMenu = $state(false);
-  const MODEL_NAMES: Record<string, string> = { haiku: "Haiku", sonnet: "Sonnet", opus: "Opus", fable: "Fable" };
+  let powering = $state(false);
+  const CLAUDE_MODELS = [["haiku", "Haiku"], ["sonnet", "Sonnet"], ["opus", "Opus"], ["fable", "Fable"]];
+  const CHATGPT_MODELS = [
+    ["codex:gpt-6.1-sol", "GPT-6.1 Sol"],
+    ["codex:gpt-6-astra", "GPT-6 Astra"],
+    ["codex:gpt-6.1-terra", "GPT-6.1 Terra"],
+    ["codex:gpt-6-luna", "GPT-6 Luna"],
+  ];
+
+  async function toggleLocal() {
+    powering = true;
+    note = "";
+    try {
+      await invoke("set_local_ai", { on: !prefs.local_ai });
+    } catch (e) {
+      note = `Local AI: ${e}`;
+    } finally {
+      powering = false;
+    }
+  }
   const baseName = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() ?? p;
 
   async function loadPrefs() {
@@ -297,15 +321,34 @@
             value={prefs.models.agent}
             onchange={(e) => savePrefs({ models: { ...prefs.models, agent: e.currentTarget.value } })}
           >
-            {#each Object.entries(MODEL_NAMES) as [id, name] (id)}<option value={id}>{name}</option>{/each}
+            <optgroup label="Claude">
+              {#each CLAUDE_MODELS as [id, name] (id)}<option value={id}>{name}</option>{/each}
+            </optgroup>
+            <optgroup label="ChatGPT (Codex)">
+              {#each CHATGPT_MODELS as [id, name] (id)}<option value={id}>{name}</option>{/each}
+            </optgroup>
           </select>
         </label>
+        <button
+          type="button"
+          class="tool-chip power"
+          class:on={prefs.local_ai}
+          aria-pressed={prefs.local_ai}
+          disabled={powering}
+          title={prefs.local_ai
+            ? "Local AI is on: Engine thinks on your PC (Qwen3 8B). Click to turn it off."
+            : "Local AI is off: Engine thinks with Claude Haiku. Click to run on your PC instead."}
+          onclick={toggleLocal}
+        >
+          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v8" /><path d="M6.4 6.4a8 8 0 1 0 11.2 0" /></svg>
+          {powering ? (prefs.local_ai ? "Stopping…" : "Starting…") : prefs.local_ai ? "Local" : "Cloud"}
+        </button>
       </div>
       <div class="chips-right">
-        <button type="button" class="icon-tool" aria-label="Review my day" title="Review my day" onclick={reviewDay}>
+        <button type="button" class="icon-btn" aria-label="Review my day" title="Review my day" onclick={reviewDay}>
           <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9" /></svg>
         </button>
-        <button type="button" class="icon-tool" aria-label="Read the briefing aloud" title="Read the briefing aloud" onclick={readAloud}>
+        <button type="button" class="icon-btn" aria-label="Read the briefing aloud" title="Read the briefing aloud" onclick={readAloud}>
           <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"
             ><path d="M11 5 6 9H3v6h3l5 4z" /><path d="M15.5 8.5a5 5 0 0 1 0 7" /><path d="M18.5 5.5a9 9 0 0 1 0 13" /></svg
           >
@@ -316,7 +359,7 @@
       type="button"
       aria-label={voice === "listening" ? "Stop and transcribe" : "Speak"}
       aria-pressed={voice === "listening"}
-      title="Speak (or hold Ctrl+Alt+Space anywhere)"
+      title="Speak (or hold the ` key anywhere)"
       disabled={voice === "transcribing"}
       onclick={toggleMic}
     >
@@ -332,7 +375,7 @@
   </div>
   <p class="status" aria-live="polite">
     {#if voice === "listening"}
-      <span class="indicator"><Orb process="listening" size={16} /></span>Listening… click the mic again (or let go of the keys) when you're done.
+      <span class="indicator"><Orb process="listening" size={16} /></span>Listening… let go of the key (or click the mic) when you're done.
     {:else if voice === "transcribing"}
       <span class="indicator"><Orb process="thinking" size={16} /></span>Turning your words into text…
     {:else if sorting}
@@ -489,14 +532,14 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
-    padding: var(--space-md) var(--space-md) 10px;
-    border-radius: 14px;
+    padding: 14px var(--space-md) 10px;
+    border-radius: var(--r-lg);
     transition: border-color var(--ease), box-shadow var(--ease);
   }
 
   .field:focus-within {
     border-color: var(--accent);
-    box-shadow: 0 0 0 4px var(--accent-glow);
+    box-shadow: 0 0 0 3px rgb(142 144 245 / 0.14);
   }
 
   .top {
@@ -526,10 +569,10 @@
     height: 30px;
     padding: 0 10px;
     border: 1px solid var(--border);
-    border-radius: 999px;
-    background: rgb(29 25 42 / 0.8);
+    border-radius: var(--r-sm);
+    background: var(--surface-2);
     color: var(--text-secondary);
-    font-size: 12px;
+    font-size: 13px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -537,8 +580,8 @@
     transition: border-color var(--ease), color var(--ease);
   }
 
-  .tool-chip:hover {
-    border-color: var(--accent);
+  .tool-chip:hover:not(:disabled) {
+    border-color: color-mix(in oklab, var(--border), white 22%);
     color: var(--text);
   }
 
@@ -557,6 +600,22 @@
     cursor: pointer;
   }
 
+  .tool-chip.power.on {
+    border-color: rgb(95 212 160 / 0.55);
+    color: var(--success);
+  }
+
+  .tool-chip:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+
+  .tool-chip option,
+  .tool-chip optgroup {
+    background: #13101c;
+    color: var(--text);
+  }
+
   .menu-wrap {
     position: relative;
   }
@@ -571,8 +630,9 @@
     min-width: 260px;
     max-width: 420px;
     padding: 4px;
+    border-radius: var(--r-md);
     background: rgb(19 16 28 / 0.97);
-    box-shadow: 0 12px 32px rgb(0 0 0 / 0.5);
+    box-shadow: 0 12px 32px rgb(0 0 0 / 0.45);
   }
 
   .menu button {
@@ -580,7 +640,7 @@
     flex-direction: column;
     padding: 7px 10px;
     border: 0;
-    border-radius: 7px;
+    border-radius: var(--r-sm);
     background: transparent;
     text-align: left;
   }
@@ -598,7 +658,7 @@
   .m-path {
     overflow: hidden;
     color: var(--text-muted);
-    font-size: 11px;
+    font-size: 12px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -626,37 +686,17 @@
 
 
 
-  .icon-tool {
-    display: grid;
-    place-items: center;
-    width: 32px;
-    height: 32px;
-    flex-shrink: 0;
-    border: 0;
-    border-radius: 9px;
-    background: transparent;
-    color: var(--text-muted);
-    transition: background var(--ease), color var(--ease);
-  }
 
-  .icon-tool:hover {
-    background: var(--surface-2);
-    color: var(--text);
-  }
 
-  .icon-tool svg {
-    width: 17px;
-    height: 17px;
-  }
 
   .mic {
     display: grid;
     place-items: center;
-    width: 38px;
-    height: 38px;
+    width: 36px;
+    height: 36px;
     flex-shrink: 0;
     border: 1px solid var(--border);
-    border-radius: 11px;
+    border-radius: var(--r-sm);
     background: var(--surface-2);
     color: var(--text-secondary);
     transition: border-color var(--ease), color var(--ease), box-shadow var(--ease);
@@ -669,8 +709,8 @@
 
   .mic.on {
     border-color: var(--danger);
+    background: rgb(240 113 138 / 0.12);
     color: var(--danger);
-    box-shadow: 0 0 0 4px rgb(240 113 138 / 0.18);
   }
 
   .mic:disabled {
@@ -681,28 +721,39 @@
   .send {
     display: grid;
     place-items: center;
-    width: 38px;
-    height: 38px;
+    width: 36px;
+    height: 36px;
     flex-shrink: 0;
     border: 0;
-    border-radius: 11px;
-    background: var(--accent-gradient);
+    border-radius: var(--r-sm);
+    background: var(--accent);
     color: var(--on-accent);
-    box-shadow: 0 4px 16px var(--accent-glow);
-    transition: opacity var(--ease), transform var(--ease), filter var(--ease);
+    transition:
+      transform var(--m-out) var(--curve),
+      background-color var(--m-out) var(--curve),
+      opacity var(--m-out) var(--curve);
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .send:hover:not(:disabled),
+    .mic:hover:not(:disabled) {
+      transform: translateY(-1px);
+      transition-duration: var(--m-in);
+    }
   }
 
   .send:hover:not(:disabled) {
-    filter: brightness(1.08);
+    background: var(--accent-hover);
   }
 
-  .send:active:not(:disabled) {
-    transform: scale(0.96);
+  .send:active:not(:disabled),
+  .mic:active:not(:disabled) {
+    transform: translateY(1px) scale(0.985);
+    transition-duration: var(--m-press);
   }
 
   .send:disabled {
     opacity: 0.35;
-    box-shadow: none;
     cursor: default;
   }
 
@@ -766,7 +817,7 @@
     padding: 1px 8px;
     border: 1px solid var(--border);
     border-radius: 999px;
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     vertical-align: 1px;
   }
@@ -801,7 +852,7 @@
     padding: var(--space-md);
     background: rgb(14 12 21 / 0.7);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: var(--r-md);
     color: var(--text-secondary);
     font: inherit;
     font-size: 14px;

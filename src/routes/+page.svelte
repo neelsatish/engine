@@ -110,7 +110,7 @@
       {/each}
     </nav>
     {#if update}
-      <button class="update-pill" onclick={installUpdate} disabled={updating} title="Restart Engine on version {update.version}">
+      <button class="button primary update-pill" onclick={installUpdate} disabled={updating} title="Restart Engine on version {update.version}">
         {#if updating}<Orb process="updating" size={14} />{/if}
         {updating ? "Updating…" : `Update to ${update.version}`}
       </button>
@@ -202,7 +202,7 @@
     gap: 2px;
     padding: 3px;
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: var(--r-md);
     background: var(--glass);
     backdrop-filter: blur(14px);
   }
@@ -210,7 +210,7 @@
   .tab {
     padding: 4px 12px;
     border: 0;
-    border-radius: 7px;
+    border-radius: var(--r-sm);
     background: transparent;
     color: var(--text-muted);
     font-size: 13px;
@@ -232,7 +232,7 @@
     width: 32px;
     height: 32px;
     border: 0;
-    border-radius: 8px;
+    border-radius: var(--r-sm);
     background: transparent;
     color: var(--text-muted);
     transition: background var(--ease), color var(--ease);
@@ -245,22 +245,8 @@
 
 
   .update-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    height: 28px;
+    height: 30px;
     padding: 0 12px;
-    border: 0;
-    border-radius: 999px;
-    background: var(--accent-gradient);
-    color: var(--on-accent);
-    font-size: 12px;
-    font-weight: 650;
-    white-space: nowrap;
-  }
-
-  .update-pill:hover:not(:disabled) {
-    filter: brightness(1.08);
   }
 
   .toast {

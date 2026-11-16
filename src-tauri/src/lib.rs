@@ -1,6 +1,7 @@
 pub mod ai;
 pub mod jobs;
 pub mod launcher;
+pub mod ptt;
 pub mod quick;
 pub mod router;
 pub mod schedule;
@@ -184,7 +185,7 @@ fn handle_dump(app: &AppHandle, text: &str) -> Reply {
         .flatten()
         .filter(|c| !c.trim().is_empty())
         .map(|c| c.chars().take(20_000).collect::<String>());
-    let items = match ai::ask(&engine.work_dir, router::MODEL, router::SYSTEM, &prompt, Some(router::SCHEMA))
+    let items = match ai::ask_any(&engine.work_dir, router::MODEL, router::SYSTEM, &prompt, Some(router::SCHEMA), engine.settings().local_ai)
         .and_then(router::parse)
     {
         Ok(items) => items,
@@ -241,7 +242,7 @@ fn start(app: &AppHandle, engine: &Engine, dump: i64, aliases: &[Target], folder
                     add("failed", &format!("Several apps match “{}”: {}. Say which one.", item.detail, names.join(", ")));
                 }
                 (Match::Nothing, None) => {
-                    add("failed", &format!("Couldn't find “{}”. Add it under Edit aliases.", item.detail));
+                    add("failed", &format!("Couldn't find “{}”. Add it as a shortcut in Settings › General.", item.detail));
                 }
             }
         }
@@ -253,7 +254,8 @@ fn start(app: &AppHandle, engine: &Engine, dump: i64, aliases: &[Target], folder
                 let today = engine.store().today().unwrap_or_default();
                 let system = router::answer_system(&today);
                 let model = engine.settings().models.answer;
-                let reply = ai::ask(&engine.work_dir, &model, &system, &question, Some(router::ANSWER_SCHEMA));
+                let local = engine.settings().local_ai;
+                let reply = ai::ask_any(&engine.work_dir, &model, &system, &question, Some(router::ANSWER_SCHEMA), local);
                 let (status, result) = match reply {
                     Ok(out) => {
                         let (text, plan) = router::parse_answer(&out);
@@ -309,7 +311,8 @@ fn run_job(app: &AppHandle, job: store::Job) {
         .or_else(|| project.map(|p| PathBuf::from(&p.folder)).filter(|f| f.is_dir()))
         .unwrap_or_else(|| dir.clone());
     // Approved actions always go to Claude: the one-call guard and the user's connectors live there.
-    let codex = job.tool.is_empty() && project.is_some_and(|p| p.runner == "codex");
+    let codex_model = settings::codex_model(&settings.models.agent);
+    let codex = job.tool.is_empty() && (codex_model.is_some() || project.is_some_and(|p| p.runner == "codex"));
     let notes = settings.knowledge_dirs();
     let marker = dir.join("approved.once");
     let approved = (!job.tool.is_empty()).then(|| (job.tool.as_str(), marker.as_path()));
@@ -323,9 +326,11 @@ fn run_job(app: &AppHandle, job: store::Job) {
     };
     let outcome = fs::create_dir_all(&dir).map_err(|e| format!("Couldn't make the job folder: {e}")).and_then(|()| {
         if codex {
-            jobs::run_codex(&work, &dir, &job.prompt, on_spawn, on_activity)
+            jobs::run_codex(&work, &dir, codex_model, &job.prompt, on_spawn, on_activity)
         } else {
-            jobs::run(&work, &dir, &notes, approved, &settings.models.agent, &job.prompt, on_spawn, on_activity)
+            // An approved action with a ChatGPT agent model still runs on Claude, so Haiku stands in for it.
+            let model = if codex_model.is_some() { "haiku" } else { settings.models.agent.as_str() };
+            jobs::run(&work, &dir, &notes, approved, model, &job.prompt, on_spawn, on_activity)
         }
     });
     let report = match outcome {
@@ -399,7 +404,7 @@ fn audit(app: &AppHandle, id: i64, task: &str, report: &str, opened: &[String]) 
     log_err(engine.store().set_verdict(id, "checking", ""));
     changed(app);
     let prompt = jobs::audit_prompt(task, report, opened);
-    let (verdict, reason) = ai::ask(&engine.work_dir, jobs::AUDIT_MODEL, jobs::AUDIT_SYSTEM, &prompt, Some(jobs::AUDIT_SCHEMA))
+    let (verdict, reason) = ai::ask_any(&engine.work_dir, jobs::AUDIT_MODEL, jobs::AUDIT_SYSTEM, &prompt, Some(jobs::AUDIT_SCHEMA), engine.settings().local_ai)
         .ok()
         .and_then(|out| jobs::audit_verdict(&out))
         .unwrap_or_else(|| (String::new(), String::new())); // no verdict beats a wrong one
@@ -585,7 +590,7 @@ fn review_day(app: AppHandle) -> Result<(), String> {
         let engine = app.state::<Engine>();
         let today = engine.store().today().unwrap_or_default();
         let model = engine.settings().models.answer;
-        let (status, text) = match ai::ask(&engine.work_dir, &model, &jobs::review_system(&today), &prompt, None) {
+        let (status, text) = match ai::ask_any(&engine.work_dir, &model, &jobs::review_system(&today), &prompt, None, engine.settings().local_ai) {
             Ok(reply) => ("done", reply.as_str().unwrap_or_default().trim().to_string()),
             Err(e) => ("failed", e),
         };
@@ -760,6 +765,34 @@ async fn connections(app: AppHandle) -> Result<Vec<ai::Connection>, String> {
 }
 
 /// Opens claude.ai's connector settings, where Gmail, Drive and the rest are added.
+/// Whether Ollama is installed and running, and whether it has the local model.
+#[tauri::command]
+async fn local_status() -> serde_json::Value {
+    tauri::async_runtime::spawn_blocking(ai::local_status).await.unwrap_or_default()
+}
+
+/// The Local AI power button. On: start Ollama, warm the model, and route Engine's own thinking to it.
+/// Off: unload the model, stop Ollama, and go back to Haiku.
+#[tauri::command]
+async fn set_local_ai(on: bool, app: AppHandle) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let engine = app.state::<Engine>();
+        if on {
+            ai::start_local()?;
+            std::thread::spawn(ai::warm_local);
+        } else {
+            ai::stop_local();
+        }
+        let mut settings = engine.settings();
+        settings.local_ai = on;
+        let saved = settings.save(&engine.settings_path)?;
+        let _ = app.emit("settings", &saved);
+        Ok(on)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 fn manage_connectors() -> Result<(), String> {
     launcher::launch("https://claude.ai/settings/connectors").map_err(|e| e.to_string())
@@ -773,6 +806,7 @@ fn get_settings(engine: State<Engine>) -> Result<settings::Settings, String> {
 #[tauri::command]
 fn save_settings(settings: settings::Settings, app: AppHandle) -> Result<settings::Settings, String> {
     let saved = settings.save(&app.state::<Engine>().settings_path)?;
+    ptt::ENABLED.store(saved.voice.hold_key, std::sync::atomic::Ordering::Relaxed);
     let _ = app.emit("settings", &saved); // keeps the dump box chips and the Settings view in step
     Ok(saved)
 }
@@ -855,6 +889,30 @@ pub fn run() {
                 helper: Mutex::default(),
                 speaking: Mutex::default(),
             });
+
+            // Local AI left on last time: make sure Ollama is running (the model loads on first use).
+            if app.state::<Engine>().settings().local_ai {
+                std::thread::spawn(|| {
+                    if let Err(e) = ai::start_local() {
+                        eprintln!("local AI: {e}");
+                    }
+                });
+            }
+
+            // Hold ` to talk; a tap still types it.
+            ptt::ENABLED.store(app.state::<Engine>().settings().voice.hold_key, std::sync::atomic::Ordering::Relaxed);
+            let (on_hold, on_release) = (app.handle().clone(), app.handle().clone());
+            ptt::install(
+                move || {
+                    if let Err(e) = start_listening(&on_hold) {
+                        voice_event(&on_hold, "error", &e);
+                    }
+                },
+                move || {
+                    let app = on_release.clone();
+                    std::thread::spawn(move || heard(&app));
+                },
+            );
 
             // Due reminders become Windows notifications.
             let ticker = app.handle().clone();
@@ -952,6 +1010,8 @@ pub fn run() {
             save_block,
             delete_block,
             connections,
+            local_status,
+            set_local_ai,
             manage_connectors,
             get_settings,
             save_settings,

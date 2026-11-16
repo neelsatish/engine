@@ -344,6 +344,7 @@ const CODEX_SCHEMA: &str = r#"{"type":"object","additionalProperties":false,"req
 pub fn run_codex(
     work: &Path,
     log_dir: &Path,
+    model: Option<&str>,
     prompt: &str,
     on_spawn: impl FnOnce(u32),
     mut on_activity: impl FnMut(&'static str, String),
@@ -360,6 +361,7 @@ pub fn run_codex(
         .args(["-c", "mcp_servers={}"])
         .args(["--disable", "apps", "--disable", "plugins", "--disable", "computer_use"])
         .args(["--disable", "browser_use", "--disable", "browser_use_external", "--disable", "in_app_browser"])
+        .args(model.map(|m| vec!["-m", m]).unwrap_or_default())
         .args(["--sandbox", "workspace-write", "--output-schema"])
         .arg(&schema)
         .arg("-o")

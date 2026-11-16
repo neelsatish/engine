@@ -8,7 +8,7 @@
   import { onMount } from "svelte";
 
   type Project = { name: string; folder: string; runner: string };
-  type Voice = { model: string; auto_submit: boolean; speak_on_summon: boolean; engine: string; clip: string };
+  type Voice = { model: string; auto_submit: boolean; speak_on_summon: boolean; engine: string; clip: string; hold_key: boolean };
   type Settings = {
     projects: Project[];
     knowledge: string[];
@@ -16,6 +16,7 @@
     models: { agent: string; answer: string };
     folder: string;
     recent: string[];
+    local_ai: boolean;
   };
   type VoiceStatus = { python: boolean; whisper: boolean; chatterbox: boolean; own_env: boolean };
   type Connection = { name: string; kind: string; status: string };
@@ -40,13 +41,36 @@
   ];
 
   let section = $state<Section>("general");
+  type LocalStatus = { installed: boolean; running: boolean; model: boolean };
+  let local = $state<LocalStatus | null>(null);
+  let powering = $state(false);
+  const CHATGPT = [
+    ["codex:gpt-6.1-sol", "GPT-6.1 Sol"],
+    ["codex:gpt-6-astra", "GPT-6 Astra"],
+    ["codex:gpt-6.1-terra", "GPT-6.1 Terra"],
+    ["codex:gpt-6-luna", "GPT-6 Luna"],
+  ];
+
+  async function setLocal(on: boolean) {
+    powering = true;
+    try {
+      await invoke("set_local_ai", { on });
+      note = "";
+    } catch (e) {
+      note = `Local AI: ${e}`;
+    } finally {
+      powering = false;
+      local = await invoke<LocalStatus>("local_status");
+    }
+  }
   let settings = $state<Settings>({
     projects: [],
     knowledge: [],
-    voice: { model: "small", auto_submit: false, speak_on_summon: false, engine: "windows", clip: "" },
+    voice: { model: "large-v3-turbo", auto_submit: false, speak_on_summon: false, engine: "windows", clip: "", hold_key: true },
     models: { agent: "haiku", answer: "sonnet" },
     folder: "",
     recent: [],
+    local_ai: false,
   });
   let status = $state<VoiceStatus | null>(null);
   let conns = $state<Connection[] | null>(null);
@@ -136,6 +160,7 @@
     section = id;
     // Checking connections runs `claude mcp list`, so only do it when that section is opened.
     if (id === "connections" && conns === null && !connError) loadConnections();
+    if (id === "models" && local === null) invoke<LocalStatus>("local_status").then((s) => (local = s));
     if (id === "voice" && !status) invoke<VoiceStatus>("voice_status").then((s) => (status = s)).catch(() => {});
   }
 
@@ -178,17 +203,18 @@
       </div>
       <div class="row">
         <div class="label-col"><span class="name">Shortcuts</span><span class="desc">Names for sites and folders</span></div>
-        <button class="button" onclick={onEditAliases}>Edit</button>
+        <button class="button" onclick={onEditAliases}>Edit shortcuts</button>
       </div>
       <div class="row">
         <div class="label-col"><span class="name">Hotkeys</span><span class="desc">Show or hide · hold to talk</span></div>
-        <span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>Space</kbd> · <kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>Space</kbd></span>
+        <span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>Space</kbd> · hold <kbd>`</kbd></span>
       </div>
     {:else if section === "models"}
       <div class="row">
         <div class="label-col"><span class="name">Agents</span><span class="desc">Background jobs</span></div>
         <select class="input" aria-label="Agent model" value={settings.models.agent} onchange={(e) => setModels({ agent: e.currentTarget.value })}>
-          {#each MODELS as [id, name] (id)}<option value={id}>{name}</option>{/each}
+          <optgroup label="Claude">{#each MODELS as [id, name] (id)}<option value={id}>{name}</option>{/each}</optgroup>
+          <optgroup label="ChatGPT (Codex)">{#each CHATGPT as [id, name] (id)}<option value={id}>{name}</option>{/each}</optgroup>
         </select>
       </div>
       <div class="row">
@@ -196,6 +222,21 @@
         <select class="input" aria-label="Answer model" value={settings.models.answer} onchange={(e) => setModels({ answer: e.currentTarget.value })}>
           {#each MODELS as [id, name] (id)}<option value={id}>{name}</option>{/each}
         </select>
+      </div>
+      <div class="row">
+        <div class="label-col">
+          <span class="name">Local AI</span>
+          <span class="desc">
+            {local === null
+              ? "Checking…"
+              : !local.installed
+                ? "Ollama isn't installed yet"
+                : settings.local_ai
+                  ? "On · sorting, answers and checks run on Qwen3 8B, on your PC"
+                  : "Off · Engine uses Claude Haiku"}
+          </span>
+        </div>
+        {@render toggle(settings.local_ai, "Local AI", () => !powering && setLocal(!settings.local_ai))}
       </div>
     {:else if section === "voice"}
       <div class="row">
@@ -208,6 +249,10 @@
           <option value="base.en">Base · English, fastest</option>
           <option value="large-v3-turbo">Large turbo · best</option>
         </select>
+      </div>
+      <div class="row">
+        <div class="label-col"><span class="name">Hold <kbd>`</kbd> to talk</span><span class="desc">A quick tap still types it</span></div>
+        {@render toggle(settings.voice.hold_key, "Hold the backtick key to talk", () => setVoice({ hold_key: !settings.voice.hold_key }))}
       </div>
       <div class="row">
         <div class="label-col"><span class="name">Send what I say</span><span class="desc">Skip checking it first</span></div>
@@ -230,7 +275,7 @@
       {#if settings.voice.engine === "chatterbox"}
         <div class="row">
           <div class="label-col"><span class="name">Voice clip</span><span class="desc" title={settings.voice.clip}>{settings.voice.clip ? base(settings.voice.clip) : "Default voice"}</span></div>
-          <button class="button" onclick={chooseClip}>Choose</button>
+          <button class="button" onclick={chooseClip}>Choose clip</button>
         </div>
       {/if}
       <div class="row">
@@ -239,7 +284,7 @@
           <span class="desc" title={installLine}>{installing || installLine ? installLine : status?.own_env ? "Installed" : "Chatterbox + Whisper · about 3 GB"}</span>
         </div>
         <button class="button" onclick={installVoice} disabled={installing || status?.own_env}>
-          {installing ? "Installing…" : status?.own_env ? "Installed" : "Install"}
+          {installing ? "Installing…" : status?.own_env ? "Installed" : "Install voice pack"}
         </button>
       </div>
     {:else if section === "projects"}
@@ -268,7 +313,7 @@
           <option value="claude">Claude</option>
           <option value="codex">Codex</option>
         </select>
-        <button class="button primary" type="submit" disabled={!newName.trim()}>Add</button>
+        <button class="button primary" type="submit" disabled={!newName.trim()}>Add project</button>
       </form>
     {:else if section === "notes"}
       {#each settings.knowledge as k, i (k)}
@@ -299,8 +344,8 @@
         {/each}
       {/if}
       <div class="add">
-        <button class="button primary" onclick={() => invoke("manage_connectors")}>Add on claude.ai</button>
-        <button class="button" onclick={loadConnections} disabled={conns === null}>Refresh</button>
+        <button class="button primary" onclick={() => invoke("manage_connectors")}>Add connectors</button>
+        <button class="button" onclick={loadConnections} disabled={conns === null}>Check again</button>
       </div>
     {/if}
   </section>
@@ -333,7 +378,7 @@
     gap: 10px;
     padding: 8px 10px;
     border: 0;
-    border-radius: 9px;
+    border-radius: var(--r-sm);
     background: transparent;
     color: var(--text-muted);
     font-size: 13px;
@@ -363,7 +408,7 @@
     margin-top: auto;
     padding: 0 10px;
     color: var(--text-muted);
-    font-size: 11px;
+    font-size: 12px;
   }
 
   .pane {
@@ -402,7 +447,7 @@
   .desc {
     overflow: hidden;
     color: var(--text-muted);
-    font-size: 12px;
+    font-size: 13px;
     text-overflow: ellipsis;
     white-space: nowrap;
     user-select: text;
@@ -445,25 +490,7 @@
     font-size: 13px;
   }
 
-  .icon-btn {
-    display: grid;
-    place-items: center;
-    width: 30px;
-    height: 30px;
-    flex-shrink: 0;
-    border: 0;
-    border-radius: 8px;
-    background: transparent;
-    color: var(--text-muted);
-  }
-
-  .icon-btn svg {
-    width: 15px;
-    height: 15px;
-  }
-
   .icon-btn:hover {
-    background: var(--surface-2);
     color: var(--danger);
   }
 
@@ -477,7 +504,6 @@
 
   .conn-dot.connected {
     background: var(--success);
-    box-shadow: 0 0 8px rgb(95 212 160 / 0.45);
   }
 
   .conn-dot.needs-auth {
@@ -488,42 +514,10 @@
     margin: 8px 0;
     padding: var(--space-sm) var(--space-md);
     border: 1px solid rgb(240 113 138 / 0.5);
-    border-radius: 9px;
+    border-radius: var(--r-sm);
     background: rgb(240 113 138 / 0.1);
     color: var(--text);
     font-size: 13px;
     user-select: text;
-  }
-
-  .switch {
-    position: relative;
-    width: 40px;
-    height: 22px;
-    flex-shrink: 0;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: var(--surface-2);
-    transition: background var(--ease), border-color var(--ease);
-  }
-
-  .switch span {
-    position: absolute;
-    top: 2px;
-    left: 2px;
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
-    background: var(--text-muted);
-    transition: transform var(--ease), background var(--ease);
-  }
-
-  .switch[aria-checked="true"] {
-    border-color: transparent;
-    background: var(--accent-gradient);
-  }
-
-  .switch[aria-checked="true"] span {
-    transform: translateX(18px);
-    background: var(--on-accent);
   }
 </style>

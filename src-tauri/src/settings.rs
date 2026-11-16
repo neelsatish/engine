@@ -16,9 +16,18 @@ pub struct Settings {
     pub folder: String,
     /// Folders chosen recently, newest first.
     pub recent: Vec<String>,
+    /// Local AI power: Engine's own thinking runs on the local model (Qwen3 through Ollama) instead of Haiku.
+    pub local_ai: bool,
 }
 
 pub const MODELS: [&str; 4] = ["haiku", "sonnet", "opus", "fable"];
+/// ChatGPT models for agents, run through Codex. Stored with a "codex:" prefix.
+pub const CODEX_MODELS: [&str; 4] = ["gpt-6.1-sol", "gpt-6-astra", "gpt-6.1-terra", "gpt-6-luna"];
+
+/// The Codex model an agent model setting names, if it's a ChatGPT one.
+pub fn codex_model(agent: &str) -> Option<&str> {
+    agent.strip_prefix("codex:").filter(|m| CODEX_MODELS.contains(m))
+}
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(default)]
@@ -48,16 +57,19 @@ pub struct Voice {
     pub engine: String,
     /// The reference clip Chatterbox clones, about 10 seconds of a voice the user owns or may use.
     pub clip: String,
+    /// Hold the key under Esc (`) to talk; a tap still types it.
+    pub hold_key: bool,
 }
 
 impl Default for Voice {
     fn default() -> Self {
         Self {
-            model: "small".into(),
+            model: "large-v3-turbo".into(),
             auto_submit: false,
             speak_on_summon: false,
             engine: "windows".into(),
             clip: String::new(),
+            hold_key: true,
         }
     }
 }
@@ -93,13 +105,13 @@ impl Settings {
             !p.name.is_empty() && !p.folder.is_empty() && seen.insert(p.name.to_lowercase())
         });
         if !["small", "base.en", "large-v3-turbo"].contains(&self.voice.model.as_str()) {
-            self.voice.model = "small".into();
+            self.voice.model = "large-v3-turbo".into();
         }
         if !["windows", "chatterbox"].contains(&self.voice.engine.as_str()) {
             self.voice.engine = "windows".into();
         }
         let defaults = Models::default();
-        if !MODELS.contains(&self.models.agent.as_str()) {
+        if !MODELS.contains(&self.models.agent.as_str()) && codex_model(&self.models.agent).is_none() {
             self.models.agent = defaults.agent;
         }
         if !MODELS.contains(&self.models.answer.as_str()) {
@@ -156,6 +168,7 @@ mod tests {
             ],
             knowledge: vec!["C:\\Notes".into(), " c:\\notes ".into(), "".into()],
             voice: Voice { model: "huge".into(), ..Voice::default() },
+            local_ai: true,
             models: Models { agent: "opus".into(), answer: "gpt".into() },
             folder: "C:\\work".into(),
             recent: vec!["C:\\old".into(), "c:\\WORK".into()],
@@ -164,8 +177,11 @@ mod tests {
         let app = Project { name: "My App".into(), folder: "C:\\code\\app".into(), runner: "codex".into() };
         assert_eq!(saved.projects, [app]);
         assert_eq!(saved.knowledge, ["C:\\Notes"]);
-        assert_eq!(saved.voice.model, "small"); // unknown models fall back
+        assert_eq!(saved.voice.model, "large-v3-turbo"); // unknown models fall back
         assert_eq!((saved.models.agent.as_str(), saved.models.answer.as_str()), ("opus", "sonnet"));
+        assert_eq!(codex_model("codex:gpt-6.1-sol"), Some("gpt-6.1-sol"));
+        assert_eq!(codex_model("codex:gpt-unknown"), None);
+        assert_eq!(codex_model("opus"), None);
         assert_eq!(saved.recent, ["C:\\work", "C:\\old"]); // current first, no case-duplicates
         assert_eq!(Settings::load(&path).unwrap(), saved);
         assert_eq!(saved.project("my app").map(|p| p.folder.as_str()), Some("C:\\code\\app"));

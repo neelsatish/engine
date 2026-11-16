@@ -1,9 +1,9 @@
 //! One-shot model calls through the Claude Code CLI the user is already signed in to, so no API key is needed.
 
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::{
     io::Write,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
@@ -41,6 +41,121 @@ pub fn ask(cwd: &Path, model: &str, system: &str, prompt: &str, schema: Option<&
         let stderr = String::from_utf8_lossy(&out.stderr);
         stderr.lines().rev().find(|l| !l.trim().is_empty()).map_or(e, |l| l.trim().to_string())
     })
+}
+
+/// The local model, run by Ollama on this PC. It loads on first use and unloads after Ollama's idle timeout.
+pub const LOCAL_MODEL: &str = "qwen3:8b";
+const OLLAMA: &str = "http://127.0.0.1:11434";
+
+/// Engine's own model calls (sorting, answers, audits, reviews). With Local AI on they run on the local model,
+/// falling back to Claude if it fails; with it off they use `model` through Claude Code.
+pub fn ask_any(cwd: &Path, model: &str, system: &str, prompt: &str, schema: Option<&str>, local: bool) -> Result<Value, String> {
+    if local {
+        ask_local(system, prompt, schema).or_else(|_| ask(cwd, model, system, prompt, schema))
+    } else {
+        ask(cwd, model, system, prompt, schema)
+    }
+}
+
+fn no_window(cmd: &mut Command) -> &mut Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    cmd
+}
+
+/// Ollama's program: its usual install folder, else whatever `ollama` is on the PATH.
+fn ollama_exe() -> PathBuf {
+    let installed = std::env::var_os("LOCALAPPDATA")
+        .map(|d| PathBuf::from(d).join("Programs").join("Ollama").join("ollama.exe"))
+        .filter(|p| p.is_file());
+    installed.unwrap_or_else(|| PathBuf::from("ollama"))
+}
+
+fn ollama_up() -> bool {
+    ureq::get(&format!("{OLLAMA}/api/version")).timeout(std::time::Duration::from_secs(1)).call().is_ok()
+}
+
+/// Turns Local AI on: starts Ollama if it isn't running and checks the model is there. The model itself loads on
+/// first use (or warm-up) and unloads after Ollama's idle timeout.
+pub fn start_local() -> Result<(), String> {
+    if !ollama_up() {
+        no_window(Command::new(ollama_exe()).arg("serve"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("Couldn't start Ollama ({e}). Is it installed?"))?;
+        let ready = (0..40).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            ollama_up()
+        });
+        if !ready {
+            return Err("Ollama didn't start.".into());
+        }
+    }
+    if local_ready() { Ok(()) } else { Err(format!("Ollama is running but doesn't have {LOCAL_MODEL} yet.")) }
+}
+
+/// Loads the model ahead of the first question, kept for 10 idle minutes.
+pub fn warm_local() {
+    let body = json!({"model": LOCAL_MODEL, "prompt": "", "keep_alive": "10m"});
+    let _ = ureq::post(&format!("{OLLAMA}/api/generate")).timeout(std::time::Duration::from_secs(120)).send_json(body);
+}
+
+/// Turns Local AI off: unloads the model from the GPU, then stops Ollama so it uses nothing.
+pub fn stop_local() {
+    if ollama_up() {
+        let body = json!({"model": LOCAL_MODEL, "keep_alive": 0});
+        let _ = ureq::post(&format!("{OLLAMA}/api/generate")).timeout(std::time::Duration::from_secs(10)).send_json(body);
+    }
+    for image in ["ollama app.exe", "ollama.exe"] {
+        let _ = no_window(Command::new("taskkill").args(["/IM", image, "/F", "/T"])).output();
+    }
+}
+
+/// Whether Local AI can be used right now: Ollama is installed, whether it's running, and whether it has the model.
+pub fn local_status() -> Value {
+    let installed = ollama_exe().is_file() || Command::new("where").arg("ollama").output().is_ok_and(|o| o.status.success());
+    let running = ollama_up();
+    json!({"installed": installed, "running": running, "model": running && local_ready()})
+}
+
+/// Whether Ollama is running and has the local model.
+pub fn local_ready() -> bool {
+    let tags = ureq::get(&format!("{OLLAMA}/api/tags")).timeout(std::time::Duration::from_secs(2)).call();
+    tags.ok()
+        .and_then(|r| r.into_json::<Value>().ok())
+        .and_then(|v| v["models"].as_array().cloned())
+        .is_some_and(|models| models.iter().any(|m| m["name"].as_str().is_some_and(|n| n.starts_with("qwen3:8b"))))
+}
+
+/// One reply from the local model. With `schema`, Ollama constrains the reply to it and it's parsed as JSON.
+pub fn ask_local(system: &str, prompt: &str, schema: Option<&str>) -> Result<Value, String> {
+    let mut body = json!({
+        "model": LOCAL_MODEL,
+        "stream": false,
+        "think": false,
+        "options": {"temperature": 0.2},
+        "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+    });
+    if let Some(schema) = schema {
+        body["format"] = serde_json::from_str(schema).map_err(|e| e.to_string())?;
+    }
+    let reply: Value = ureq::post(&format!("{OLLAMA}/api/chat"))
+        .timeout(std::time::Duration::from_secs(180))
+        .send_json(body)
+        .map_err(|e| format!("The local model isn't available ({e}). Is Ollama running?"))?
+        .into_json()
+        .map_err(|e| format!("Couldn't read the local model's reply: {e}"))?;
+    let text = reply["message"]["content"].as_str().unwrap_or_default().trim().to_string();
+    if schema.is_some() {
+        serde_json::from_str(&text).map_err(|e| format!("The local model's reply wasn't the expected shape: {e}"))
+    } else {
+        Ok(Value::String(text))
+    }
 }
 
 /// One thing agents can use: a claude.ai connector, a plugin's server, or a local MCP server.
@@ -110,7 +225,16 @@ fn parse(stdout: &str, structured: bool) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+
+    /// Asks the real local model through Ollama. Run with `cargo test -- --ignored` once Ollama has qwen3:8b.
+    #[test]
+    #[ignore]
+    fn local_model_answers_in_shape() {
+        assert!(local_ready(), "Ollama isn't running or doesn't have {LOCAL_MODEL}");
+        let schema = r#"{"type":"object","properties":{"kind":{"type":"string","enum":["answer","job"]}},"required":["kind"]}"#;
+        let out = ask_local("Classify the request.", "What is 2 + 2?", Some(schema)).unwrap();
+        assert!(matches!(out["kind"].as_str(), Some("answer" | "job")), "{out}");
+    }
 
     #[test]
     fn reads_connections() {

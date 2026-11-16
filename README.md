@@ -25,7 +25,7 @@ UI tokens: [design-system/engine/MASTER.md](design-system/engine/MASTER.md).
 - **Reminders:** "remind me in 20 minutes to stretch" or "remind me at 6pm to call mum" shows a Windows notification
   when it's due, and the reminder also appears in the Schedule.
 - **Clipboard:** dumps that mention what you copied ("summarize what I copied") get your clipboard text attached.
-- **Folder and model chips** in the dump box. Pick a folder, like choosing a working folder in Claude, and jobs from
+- **Folder, model and Local AI chips** in the dump box. Pick a folder, like choosing a working folder in Claude, and jobs from
   your next dumps work there; recent folders are one click away. The model chip picks the agents' model: Haiku,
   Sonnet, Opus or Fable.
 - `Ctrl+Shift+Space` shows or hides Engine from anywhere; `Esc` hides it. Closing the window hides it to the tray;
@@ -82,13 +82,15 @@ it (it snaps to 15 minutes), click it to edit or delete it, or use **Add block**
 
 ### Voice
 
-Hold `Ctrl+Alt+Space` anywhere and speak, or click the mic in the dump box. Engine records your default microphone,
+Hold the key under Esc (`` ` ``) anywhere and speak; a quick tap still types the character, and with Shift, Ctrl,
+Alt or Win held it passes straight through. `Ctrl+Alt+Space` and the mic button in the dump box work too. Engine records your default microphone,
 turns it into text on this PC with Whisper (faster-whisper), and puts the words in the dump box for you to check, or
 sends them straight away if you turn that on. Recordings are deleted as soon as they're transcribed. **Read aloud**
 speaks a short summary of the briefing, and Settings can make Engine do that whenever you open it.
 
-Speech recognition uses `python` on your PATH with `faster-whisper` installed, and the Whisper model you pick
-(Small by default). The model stays loaded while you use voice and is unloaded after 5 idle minutes. Engine speaks with
+Speech recognition uses Engine's own voice Python when it's installed (otherwise `python` on your PATH with
+`faster-whisper`), and the Whisper model you pick: Large v3 turbo by default, on the GPU when PyTorch's CUDA build is
+installed (Engine borrows its cuBLAS and cuDNN). The model stays loaded while you use voice and is unloaded after 5 idle minutes. Engine speaks with
 Windows' built-in voice by default. The **voice pack** in Settings (about 3 GB, started by you) installs Chatterbox and
 Whisper into Engine's own Python 3.11 with `uv`, after which Engine can speak in a voice cloned from a short clip.
 Only clone a voice you own or have permission to use.
@@ -102,6 +104,12 @@ Only clone a voice you own or have permission to use.
 - **Connections:** everything Claude agents can use (claude.ai connectors such as Gmail, Drive and Notion, plus MCP
   servers), with each one's status and a button to add more on claude.ai.
 - **Models:** which Claude model the agents use, and which one writes answers. Sorting your dumps always uses Haiku.
+  Agents can also run on ChatGPT models through Codex: GPT-6.1 Sol, GPT-6 Astra, GPT-6.1 Terra and GPT-6 Luna.
+- **Local AI (power button):** the power chip in the dump box, or the switch in Settings → Models.
+  - **On:** Engine starts Ollama, and its own thinking (sorting, answers, audits, reviews) runs on Qwen3 8B on your
+    PC, falling back to Claude if it fails.
+  - **Off:** Engine unloads the model, stops Ollama so it uses nothing, and goes back to Claude Haiku.
+  - Agents always stay on Claude or ChatGPT, because a local model can't drive tools well enough.
 
 **Review my day** (next to Read aloud) writes a short end-of-day review: what got done, what's open, what looked
 doubtful, what tomorrow holds, and the first three things to do. It lands under Done.

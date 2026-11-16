@@ -59,7 +59,8 @@
     if (mode !== "week" || !scroller) return;
     const hour = Math.max(new Date().getHours() - 1, START_HOUR);
     const el = scroller;
-    setTimeout(() => (el.scrollTop = (hour - START_HOUR) * HOUR_PX));
+    // Two frames: the grid has its full height only after the first layout.
+    requestAnimationFrame(() => requestAnimationFrame(() => (el.scrollTop = (hour - START_HOUR) * HOUR_PX)));
   });
 
   // Each day's blocks with their position, side by side when they overlap.
@@ -338,14 +339,14 @@
     gap: 2px;
     padding: 3px;
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: var(--r-md);
     background: var(--glass);
   }
 
   .seg button {
     padding: 3px 12px;
     border: 0;
-    border-radius: 7px;
+    border-radius: var(--r-sm);
     background: transparent;
     color: var(--text-muted);
     font-size: 13px;
@@ -362,21 +363,7 @@
     gap: 2px;
   }
 
-  .icon-btn {
-    display: grid;
-    place-items: center;
-    width: 28px;
-    height: 28px;
-    border: 0;
-    border-radius: 7px;
-    background: transparent;
-    color: var(--text-muted);
-  }
 
-  .icon-btn:hover {
-    background: var(--surface-2);
-    color: var(--text);
-  }
 
   .week {
     display: flex;
@@ -396,7 +383,7 @@
   .head {
     padding: 8px 4px;
     color: var(--text-muted);
-    font-size: 12px;
+    font-size: 13px;
     text-align: center;
   }
 
@@ -419,7 +406,7 @@
     position: absolute;
     right: 6px;
     color: var(--text-muted);
-    font-size: 10px;
+    font-size: 11px;
     transform: translateY(-50%);
     font-variant-numeric: tabular-nums;
   }
@@ -458,7 +445,7 @@
     border-radius: 6px;
     background: rgb(142 144 245 / 0.16);
     color: var(--text);
-    font-size: 11px;
+    font-size: 12px;
     line-height: 1.25;
     text-align: left;
     cursor: grab;
@@ -467,7 +454,7 @@
   }
 
   .block:hover {
-    box-shadow: 0 0 0 1px var(--accent);
+    box-shadow: inset 0 0 0 1px rgb(236 234 246 / 0.25);
   }
 
   .block.dragging {

@@ -103,6 +103,6 @@
     height: 100%;
     z-index: 0;
     pointer-events: none;
-    opacity: 0.75;
+    opacity: 0.55;
   }
 </style>

@@ -41,6 +41,24 @@ rain. This palette is the user's choice and outranks any generated one.
 everything at low strength. Content sits on glass panels so text never sits directly on the rain. It runs at about
 20 fps only while Engine is visible and focused, and draws one still frame under reduced motion.
 
+### One system (taste-skill)
+
+Polished against taste-skill's rules, adapted for a desktop app. The palette above stays: it's the user's own, and a
+project's design system outranks any skill (taste-skill's "never violet" rule is overruled here).
+
+- **Radius:** 8px for controls (buttons, inputs, chips, tabs), 12px for menus and inner panels, 16px for cards and
+  the dump box (`--r-sm`, `--r-md`, `--r-lg`). Nothing else.
+- **Buttons:** one solid accent button for the main action in a view (`.button.primary`), one outlined style for
+  the rest (`.button`), and icon buttons (`.icon-btn`) with an aria-label. No gradient, glow or shadowed buttons.
+- **Motion:** every pressable thing steps up 1px on hover, and sinks 1px and scales to .985 on press: 150ms in,
+  120ms out, 90ms press, on one curve, `cubic-bezier(.2,.8,.2,1)`. Hover moves only for a fine pointer. Cards without
+  links don't move.
+- **Type:** sentence case everywhere and no tracked capitals. Labels are 13px at 600; nothing reads below 12px, and
+  12px only for meta (paths, badges, calendar text).
+- **Colour:** the interface stays neutral, and the accent marks the main button, focus, live state and the logo.
+  No glows on dots or buttons.
+- **Copy:** buttons name a verb and an object ("Add project", "Install voice pack").
+
 ### Typography
 
 - **Font:** Inter (variable), bundled locally with `@fontsource-variable/inter` because Engine must work offline.
