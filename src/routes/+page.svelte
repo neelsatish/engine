@@ -4,6 +4,8 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { relaunch } from "@tauri-apps/plugin-process";
+  import { check, type Update } from "@tauri-apps/plugin-updater";
   import { onMount } from "svelte";
 
   type Target = { name: string; target: string };
@@ -26,6 +28,8 @@
   let note = $state("");
   let choices = $state<Target[]>([]);
   let items = $state<Item[]>([]);
+  let update = $state.raw<Update | null>(null);
+  let updating = $state(false);
   let input: HTMLTextAreaElement;
 
   const now = $derived(items.filter((i) => i.kind === "instant"));
@@ -87,6 +91,32 @@
     }
   }
 
+  // Checks GitHub Releases. A new version downloads in the background, then waits for one click.
+  async function lookForUpdate() {
+    if (update) return;
+    try {
+      const found = await check();
+      if (found) {
+        await found.download();
+        update = found;
+      }
+    } catch (e) {
+      console.warn("update check failed", e); // offline, or no release yet: the next check retries
+    }
+  }
+
+  async function installUpdate() {
+    if (!update) return;
+    updating = true;
+    try {
+      await update.install(); // on Windows this runs the installer, which closes Engine
+      await relaunch();
+    } catch (e) {
+      note = `Update failed: ${e}`;
+      updating = false;
+    }
+  }
+
   async function editAliases() {
     try {
       await invoke("edit_aliases");
@@ -114,7 +144,12 @@
     input.focus();
     load();
     const offs = [listen("summon", () => input.focus()), listen("briefing", load)];
-    return () => offs.forEach((off) => off.then((f) => f()));
+    lookForUpdate();
+    const timer = setInterval(lookForUpdate, 6 * 60 * 60 * 1000);
+    return () => {
+      offs.forEach((off) => off.then((f) => f()));
+      clearInterval(timer);
+    };
   });
 </script>
 
@@ -209,7 +244,14 @@
 
   <footer>
     <span><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>Space</kbd> summon · <kbd>Esc</kbd> hide</span>
-    <button class="link" onclick={editAliases}>Edit aliases</button>
+    <span class="actions">
+      {#if update}
+        <button class="link update" onclick={installUpdate} disabled={updating}>
+          {updating ? "Updating…" : `Restart to update to ${update.version}`}
+        </button>
+      {/if}
+      <button class="link" onclick={editAliases}>Edit aliases</button>
+    </span>
   </footer>
 </main>
 
@@ -510,5 +552,15 @@
   .link:hover {
     color: var(--text);
     background: var(--surface-2);
+  }
+
+  .actions {
+    display: flex;
+    gap: var(--space-xs);
+  }
+
+  .update {
+    color: var(--accent);
+    font-weight: 600;
   }
 </style>

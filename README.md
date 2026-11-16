@@ -38,6 +38,26 @@ what to open: a URL, a folder path, or an app.
 
 Changes apply straight away, without a restart.
 
+## Install and updates
+
+Download `Engine_<version>_x64-setup.exe` from the [latest release](https://github.com/neelsatish/engine/releases/latest)
+and run it. No admin rights are needed.
+
+After that, Engine updates itself. It checks GitHub Releases when it starts and every 6 hours, downloads any new
+version in the background, and then shows **Restart to update** in the footer.
+
+To publish a new version, commit your changes, then run:
+
+```bash
+npm version patch
+git push --follow-tags
+```
+
+`npm version` bumps the version and tags it. The tag starts the `Release` GitHub Action, which builds the installer,
+signs it, and publishes the release. The signing key's private half is the `TAURI_SIGNING_PRIVATE_KEY` repository
+secret; keep a backup of it (it lives at `~/.tauri/engine.key` on the machine that made it). Without it, installed
+copies can't verify new versions and would have to be reinstalled by hand.
+
 ## Develop
 
 ```bash
