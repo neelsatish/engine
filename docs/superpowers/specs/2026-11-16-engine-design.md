@@ -1,6 +1,6 @@
 # Engine: design
 
-Date: 2026-11-16. Status: draft, awaiting approval.
+Date: 2026-11-16. Status: phases 1 to 4 built (v0.6.0); phase 5 items are next, one at a time.
 
 ## Intent
 
@@ -281,6 +281,28 @@ Each phase ends with something the user can run.
    briefing.
 5. **Later, one at a time:** wake word, local model, end-of-day review, folder watching, calendar sync, dedicated integrations (YouTube,
    Gmail, study planner, trend research), optional phone access.
+
+## Built so far (v0.6.0)
+
+Everything in phases 1 to 4 is built, plus the end-of-day review and a Codex runner from phase 5. These are the
+decisions made along the way, by the user or as Claude's calls:
+
+- **Agents run on Haiku**, through headless Claude Code (user's request). They get the user's own setup: CLAUDE.md,
+  skills, plugins, MCP servers and claude.ai connectors (user's request), except superpowers, whose approval gate
+  would stall a background run.
+- **Draft-only is enforced by a PreToolUse hook**, `engine --guard`, which refuses outward MCP tools, matched on
+  whole words so drafts and reads still work, alongside a deny list for `git push` and `gh`. An approved action runs as
+  an agent whose guard allows the approved tool exactly once.
+- **Outward requests from a dump are drafted first**, so every approval card shows the exact content.
+- **Codex projects** run `codex exec` in the workspace-write sandbox, with MCP servers, apps, plugins, browser and
+  computer use off. Approved actions always run on Claude.
+- **Audit** is a tool-free Haiku call on each finished job.
+- **Voice:** Whisper runs through faster-whisper in a Python helper that is ended after 5 idle minutes. Speech out
+  is Windows' voice by default, or Chatterbox from Engine's own uv-made Python 3.11 environment, which the user
+  installs from Settings. The CUDA toolkit isn't installed, so whisper.cpp in the Rust core was set aside.
+- **Look:** the user's Velvet Fold palette, a purple V8 logo, Thinking Orbs for each kind of process, and a purple
+  ASCII rain on the back layer that animates only while Engine is focused.
+- **Distribution:** a signed NSIS installer from a GitHub Actions release, and an in-app updater (Restart to update).
 
 ## Calls made by Claude (correct any of these)
 
