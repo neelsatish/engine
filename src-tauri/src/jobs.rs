@@ -3,6 +3,7 @@
 //! Agents get the user's own Claude Code setup: CLAUDE.md, skills, plugins, MCP servers and claude.ai connectors.
 //! Outward connector tools (send, post, share, delete...) are refused by a PreToolUse hook that runs `engine --guard`.
 
+use serde::Deserialize;
 use serde_json::Value;
 use std::{
     fs::File,
@@ -21,20 +22,29 @@ user's skills, connectors (such as Gmail, Google Drive, Notion, Canva, Microsoft
 they help. You are draft-only: never send, reply to, forward, post, upload, share or publish anything, never pay for \
 anything, never git push, and never delete anything outside the current folder. Creating drafts (email drafts, new \
 documents, new pages) is fine. If the task needs an outward step, prepare it and say it is ready for the user's \
-approval; Engine refuses outward tools anyway. Save anything \
+approval; Engine refuses outward tools anyway. If the task needs an outward \
+step, put it in proposed instead of doing it: action (a short title such as \"Send reply to Sam\"), details (exactly \
+what would happen: recipient, subject and full text for a message; file, title and visibility for an upload) and tool \
+(the exact tool you would use, such as mcp__claude_ai_Gmail__send_message). If the user has to do something themselves \
+(record clips, sign in, make a choice), put it in needs_you: task (exactly what to do and where) and follow_up (what \
+an agent should do once they have, if anything). Save anything \
 you make as files in the current folder. When you finish, return a summary of what you did and found (short, plain \
 text, \"- \" bullets, no markdown headings) and an open list of things the user should see now: website URLs, app \
 names, or paths of files you made. Leave open empty when nothing needs opening.";
 
-const SCHEMA: &str = r#"{"type":"object","properties":{"summary":{"type":"string"},"open":{"type":"array","items":{"type":"string"}}},"required":["summary","open"]}"#;
+const SCHEMA: &str = r#"{"type":"object","properties":{"summary":{"type":"string"},"open":{"type":"array","items":{"type":"string"}},"proposed":{"type":"array","items":{"type":"object","properties":{"action":{"type":"string"},"details":{"type":"string"},"tool":{"type":"string"}},"required":["action","details"]}},"needs_you":{"type":"array","items":{"type":"object","properties":{"task":{"type":"string"},"follow_up":{"type":"string"}},"required":["task"]}}},"required":["summary","open"]}"#;
 
 /// Outward shell commands Engine knows about. Best effort: an arbitrary script could still reach the network.
 const DENIED: &str = "Bash(git push:*) Bash(gh:*) Bash(curl -X POST:*) PowerShell(git push:*) PowerShell(gh:*)";
 
 /// Settings layered over the user's own for agent runs: the outward-tool guard, and superpowers off, because its
 /// brainstorming gate waits for a human to approve a design and a background agent has nobody to ask.
-fn settings(engine_exe: &Path) -> String {
-    let guard = format!("\"{}\" --guard", engine_exe.to_string_lossy().replace('\\', "/"));
+fn settings(engine_exe: &Path, approved: Option<(&str, &Path)>) -> String {
+    let slash = |p: &Path| p.to_string_lossy().replace('\\', "/");
+    let mut guard = format!("\"{}\" --guard", slash(engine_exe));
+    if let Some((tool, marker)) = approved {
+        guard += &format!(" --allow \"{tool}\" --once \"{}\"", slash(marker));
+    }
     serde_json::json!({
         "hooks": {"PreToolUse": [{"matcher": "mcp__.*", "hooks": [{"type": "command", "command": guard}]}]},
         "enabledPlugins": {"superpowers@claude-plugins-official": false}
@@ -68,12 +78,29 @@ pub fn outward(tool: &str) -> bool {
         ])
 }
 
-/// `engine --guard`: a Claude Code PreToolUse hook. Reads the hook's JSON on stdin; exit code 2 refuses the tool.
+/// Whether the guard lets `tool` through. An approved job may make one outward call: to the approved tool, or
+/// any outward tool if `allow` is "*". `used` says whether that call has happened.
+pub fn permits(tool: &str, allow: Option<&str>, used: bool) -> bool {
+    !outward(tool) || allow.is_some_and(|a| !used && (a == "*" || a == tool))
+}
+
+/// `engine --guard [--allow TOOL --once MARKER]`: a Claude Code PreToolUse hook. Reads the hook's JSON on stdin;
+/// exit code 2 refuses the tool. With --allow, the first matching outward call goes through and leaves MARKER.
 pub fn guard() -> i32 {
+    let args: Vec<String> = std::env::args().collect();
+    let flag = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
+    let (allow, once) = (flag("--allow"), flag("--once"));
     let mut input = String::new();
     let _ = std::io::stdin().read_to_string(&mut input);
     let tool = serde_json::from_str::<Value>(&input).ok().and_then(|v| v["tool_name"].as_str().map(str::to_string));
+    let used = once.as_ref().is_some_and(|m| Path::new(m).exists());
     match tool {
+        Some(tool) if outward(&tool) && permits(&tool, allow.as_deref(), used) => {
+            if let Some(marker) = &once {
+                let _ = std::fs::write(marker, &tool);
+            }
+            0
+        }
         Some(tool) if outward(&tool) => {
             eprintln!(
                 "Engine blocked {tool}: background agents are draft-only. Prepare it instead (a draft, a file, the \
@@ -108,6 +135,51 @@ pub fn audit_verdict(out: &Value) -> Option<(String, String)> {
 pub struct Outcome {
     pub summary: String,
     pub open: Vec<String>,
+    /// Outward steps the agent prepared but didn't do: each becomes an approval card.
+    pub proposed: Vec<Proposal>,
+    /// Things only the user can do: each becomes a needs-you card.
+    pub needs_you: Vec<UserTask>,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+pub struct Proposal {
+    pub action: String,
+    pub details: String,
+    #[serde(default)]
+    pub tool: String,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+pub struct UserTask {
+    pub task: String,
+    #[serde(default)]
+    pub follow_up: String,
+}
+
+/// Instructions for the agent that carries out an action the user approved.
+pub fn approved_prompt(action: &str, details: &str, tool: &str) -> String {
+    let tool = if tool.is_empty() { String::new() } else { format!("\nUse {tool}.") };
+    format!(
+        "The user approved this action. Do exactly this, once, and nothing else outward, then report what you did.\n\n\
+         Action: {action}\n{details}{tool}"
+    )
+}
+
+/// Instructions for redrafting an approval card with the user's note.
+pub fn revise_prompt(action: &str, details: &str, note: &str) -> String {
+    format!(
+        "Revise this draft for the user and propose it again for approval. Don't do it.\n\nAction: {action}\n{details}\n\n\
+         The user's note: {note}"
+    )
+}
+
+/// Instructions for an outward request straight from a dump: draft it as an approval card.
+pub fn prepare_prompt(request: &str) -> String {
+    format!(
+        "Prepare this for the user's approval. Do not carry it out and do not try the tool that would: Engine refuses \
+         it. Look up anything you need (the thread, the recipient's address), draft the exact content, and return it \
+         in proposed.\n\n{request}"
+    )
 }
 
 /// Runs one job to the end in `work` (a project folder, or the job's own folder), with read access to `notes`.
@@ -117,6 +189,7 @@ pub fn run(
     work: &Path,
     log_dir: &Path,
     notes: &[String],
+    approved: Option<(&str, &Path)>,
     prompt: &str,
     on_spawn: impl FnOnce(u32),
     mut on_activity: impl FnMut(&'static str, String),
@@ -138,7 +211,7 @@ pub fn run(
         .args(["--model", MODEL, "--append-system-prompt", &system, "--json-schema", SCHEMA])
         // Unattended: every tool is allowed except the denied commands, and the guard hook refuses outward ones.
         .args(["--permission-mode", "bypassPermissions", "--permission-prompts", "none"])
-        .args(["--disallowedTools", DENIED, "--settings", &settings(&exe)]);
+        .args(["--disallowedTools", DENIED, "--settings", &settings(&exe, approved)]);
     if !notes.is_empty() {
         cmd.arg("--add-dir").args(notes);
     }
@@ -207,7 +280,10 @@ pub fn outcome(event: &Value) -> Result<Outcome, String> {
         .as_array()
         .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
         .unwrap_or_default();
-    Ok(Outcome { summary, open })
+    let list = |key: &str| out.get(key).cloned().unwrap_or(Value::Array(vec![]));
+    let proposed = serde_json::from_value(list("proposed")).unwrap_or_default();
+    let needs_you = serde_json::from_value(list("needs_you")).unwrap_or_default();
+    Ok(Outcome { summary, open, proposed, needs_you })
 }
 
 /// What the agent is doing, from one stream event: the orb to show and a short label.
@@ -296,7 +372,14 @@ mod tests {
     #[test]
     fn reads_outcomes() {
         let done = json!({"type": "result", "is_error": false, "structured_output": {"summary": " Did it. ", "open": ["https://a.com"]}});
-        assert_eq!(outcome(&done), Ok(Outcome { summary: "Did it.".into(), open: vec!["https://a.com".into()] }));
+        let expect = Outcome { summary: "Did it.".into(), open: vec!["https://a.com".into()], proposed: vec![], needs_you: vec![] };
+        assert_eq!(outcome(&done), Ok(expect));
+        let cards = json!({"type": "result", "is_error": false, "structured_output": {"summary": "s", "open": [],
+            "proposed": [{"action": "Send reply", "details": "To: Sam", "tool": "mcp__g__send_message"}],
+            "needs_you": [{"task": "Record 3 clips"}]}});
+        let out = outcome(&cards).unwrap();
+        assert_eq!(out.proposed[0].tool, "mcp__g__send_message");
+        assert_eq!(out.needs_you[0], UserTask { task: "Record 3 clips".into(), follow_up: String::new() });
         let failed = json!({"type": "result", "is_error": true, "result": "Not logged in"});
         assert_eq!(outcome(&failed), Err("Not logged in".into()));
     }
@@ -357,10 +440,25 @@ mod tests {
     }
 
     #[test]
+    fn approved_jobs_get_one_outward_call() {
+        let send = "mcp__claude_ai_Gmail__send_message";
+        assert!(!permits(send, None, false));
+        assert!(permits(send, Some(send), false));
+        assert!(!permits(send, Some(send), true)); // only once
+        assert!(!permits("mcp__claude_ai_Gmail__forward", Some(send), false)); // only the approved tool
+        assert!(permits("mcp__claude_ai_Gmail__forward", Some("*"), false));
+        assert!(permits("mcp__claude_ai_Gmail__search_threads", None, true)); // reads are always fine
+    }
+
+    #[test]
     fn guard_settings_are_valid_json() {
-        let s: Value = serde_json::from_str(&settings(Path::new("C:\\Users\\x\\engine.exe"))).unwrap();
+        let s: Value = serde_json::from_str(&settings(Path::new("C:\\Users\\x\\engine.exe"), None)).unwrap();
         let cmd = s["hooks"]["PreToolUse"][0]["hooks"][0]["command"].as_str().unwrap();
         assert_eq!(cmd, "\"C:/Users/x/engine.exe\" --guard");
+        let approved = settings(Path::new("C:\\e.exe"), Some(("mcp__a__send", Path::new("C:\\j\\once"))));
+        let s: Value = serde_json::from_str(&approved).unwrap();
+        let cmd = s["hooks"]["PreToolUse"][0]["hooks"][0]["command"].as_str().unwrap();
+        assert_eq!(cmd, "\"C:/e.exe\" --guard --allow \"mcp__a__send\" --once \"C:/j/once\"");
         assert_eq!(s["enabledPlugins"]["superpowers@claude-plugins-official"], false);
     }
 

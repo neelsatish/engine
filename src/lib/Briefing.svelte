@@ -13,8 +13,9 @@
     | { kind: "error"; message: string };
   type Item = {
     id: number;
-    kind: "instant" | "answer" | "job" | "outward";
+    kind: "instant" | "answer" | "job" | "outward" | "task";
     title: string;
+    detail: string;
     status: "queued" | "running" | "held" | "done" | "failed";
     process: string;
     result: string;
@@ -29,6 +30,8 @@
   let choices = $state<Target[]>([]);
   let items = $state<Item[]>([]);
   let input: HTMLTextAreaElement;
+  let revising = $state<number | null>(null);
+  let reviseNote = $state("");
 
   // Shown while the briefing is empty: one click puts an example in the dump box.
   const EXAMPLES = [
@@ -88,11 +91,23 @@
     input.focus();
   }
 
-  async function act(command: "dismiss" | "cancel" | "retry", id: number) {
+  async function act(command: "dismiss" | "cancel" | "retry" | "approve" | "task_done", id: number) {
     try {
       await invoke(command, { id });
     } catch (e) {
-      note = `Couldn't ${command}: ${e}`;
+      note = `Couldn't ${command.replace("_", " ")}: ${e}`;
+    }
+  }
+
+  async function sendRevision(id: number) {
+    const text = reviseNote.trim();
+    if (!text) return;
+    try {
+      await invoke("revise", { id, note: text });
+      revising = null;
+      reviseNote = "";
+    } catch (e) {
+      note = `Couldn't revise: ${e}`;
     }
   }
 
@@ -195,12 +210,48 @@
                   {/if}
                   <pre>{i.result}</pre>
                 </details>
+              {:else if i.kind === "outward" && i.status === "held"}
+                <span class="text">{i.title}</span>
+                <span class="sub">Needs your approval. Nothing happens until you approve.</span>
+                {#if i.detail}<pre class="proposal">{i.detail}</pre>{/if}
+                <div class="card-actions">
+                  <button class="button primary" onclick={() => act("approve", i.id)}>Approve</button>
+                  <button
+                    class="button"
+                    onclick={() => {
+                      revising = revising === i.id ? null : i.id;
+                      reviseNote = "";
+                    }}>Revise</button
+                  >
+                  <button class="button" onclick={() => act("dismiss", i.id)}>Reject</button>
+                </div>
+                {#if revising === i.id}
+                  <form
+                    class="revise"
+                    onsubmit={(e) => {
+                      e.preventDefault();
+                      sendRevision(i.id);
+                    }}
+                  >
+                    <input class="input" bind:value={reviseNote} placeholder="What should change?" aria-label="Revision note" />
+                    <button class="button" type="submit" disabled={!reviseNote.trim()}>Send</button>
+                  </form>
+                {/if}
+              {:else if i.kind === "task" && i.status === "held"}
+                <span class="text">{i.title}</span>
+                {#if i.detail}<span class="sub">When you're done, an agent will: {i.detail}</span>{/if}
+                <div class="card-actions">
+                  <button class="button primary" onclick={() => act("task_done", i.id)}>Done</button>
+                  <button class="button" onclick={() => act("dismiss", i.id)}>Dismiss</button>
+                </div>
               {:else}
                 <span class="text">{i.title}</span>
                 {#if i.result}<span class="sub">{i.result}</span>{/if}
               {/if}
             </div>
-            {#if i.kind === "job" && i.status === "running"}
+            {#if (i.kind === "outward" || i.kind === "task") && i.status === "held"}
+              <!-- actions sit inside the card body -->
+            {:else if i.kind === "job" && i.status === "running"}
               <button class="link" onclick={() => act("cancel", i.id)}>Cancel</button>
             {:else if i.kind !== "instant" && i.status !== "running" && i.status !== "done"}
               {#if i.kind === "job" && i.status === "failed"}
@@ -398,6 +449,22 @@
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     user-select: text;
+  }
+
+  .proposal {
+    max-height: 200px;
+    overflow-y: auto;
+  }
+
+  .card-actions,
+  .revise {
+    display: flex;
+    gap: var(--space-sm);
+    margin: var(--space-sm) 0 var(--space-xs);
+  }
+
+  .revise .input {
+    flex: 1;
   }
 
   time {

@@ -10,8 +10,11 @@ use std::path::Path;
 #[derive(Debug, Serialize, PartialEq)]
 pub struct Item {
     pub id: i64,
+    /// instant, answer, job, outward (an approval card) or task (something only the user can do).
     pub kind: String,
     pub title: String,
+    /// What a card shows: an approval's exact action, or a task's follow-up.
+    pub detail: String,
     /// queued, running, held, done, failed or dismissed.
     pub status: String,
     /// While running: the result is the current step, and this is the orb for it (thinking, viewing, ...).
@@ -32,6 +35,19 @@ pub struct Job {
     pub dump: Option<i64>,
     pub prompt: String,
     /// A project name from Settings, or empty.
+    pub project: String,
+    /// For an approved action: the one outward tool it may call once ("*" for any). Empty for normal jobs.
+    pub tool: String,
+}
+
+/// An approval card or a needs-you task, waiting on the user.
+#[derive(Debug, PartialEq)]
+pub struct Held {
+    pub kind: String,
+    pub dump: Option<i64>,
+    pub title: String,
+    pub detail: String,
+    pub tool: String,
     pub project: String,
 }
 
@@ -70,6 +86,10 @@ impl Store {
                  PRAGMA user_version = 3;",
             )?;
         }
+        if db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? < 4 {
+            // For an approval card, the tool the agent would use; for an approved job, the one tool it may use once.
+            db.execute_batch("ALTER TABLE items ADD COLUMN tool TEXT NOT NULL DEFAULT ''; PRAGMA user_version = 4;")?;
+        }
         // An answer or job that was mid-flight when Engine quit will never finish.
         db.execute(
             "UPDATE items SET status = 'failed', result = 'Engine closed before this finished.' WHERE status = 'running'",
@@ -91,13 +111,45 @@ impl Store {
         Ok(self.0.last_insert_rowid())
     }
 
-    /// Queues a job for an agent; `project` is a project name from Settings, or empty.
-    pub fn add_job(&self, dump: Option<i64>, title: &str, detail: &str, project: &str) -> Result<i64> {
+    /// Queues a job for an agent. `project` is a project name from Settings, or empty; `tool` is set only for an
+    /// approved action (see `Job::tool`).
+    pub fn add_job(&self, dump: Option<i64>, title: &str, detail: &str, project: &str, tool: &str) -> Result<i64> {
         self.0.execute(
-            "INSERT INTO items (dump_id, kind, title, detail, status, project) VALUES (?1, 'job', ?2, ?3, 'queued', ?4)",
-            params![dump, title, detail, project],
+            "INSERT INTO items (dump_id, kind, title, detail, status, project, tool)
+             VALUES (?1, 'job', ?2, ?3, 'queued', ?4, ?5)",
+            params![dump, title, detail, project, tool],
         )?;
         Ok(self.0.last_insert_rowid())
+    }
+
+    /// Holds an approval card (`kind` "outward") or a needs-you task (`kind` "task") for the user.
+    pub fn add_held(&self, kind: &str, dump: Option<i64>, title: &str, detail: &str, tool: &str, project: &str) -> Result<i64> {
+        self.0.execute(
+            "INSERT INTO items (dump_id, kind, title, detail, status, tool, project) VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6)",
+            params![dump, kind, title, detail, tool, project],
+        )?;
+        Ok(self.0.last_insert_rowid())
+    }
+
+    /// Takes a held card off the briefing as `status` (done or dismissed) and returns it. None if it wasn't held.
+    pub fn take_held(&self, id: i64, status: &str) -> Result<Option<Held>> {
+        self.0
+            .query_row(
+                "UPDATE items SET status = ?2 WHERE id = ?1 AND status = 'held'
+                 RETURNING kind, dump_id, title, detail, tool, project",
+                params![id, status],
+                |r| {
+                    Ok(Held {
+                        kind: r.get(0)?,
+                        dump: r.get(1)?,
+                        title: r.get(2)?,
+                        detail: r.get(3)?,
+                        tool: r.get(4)?,
+                        project: r.get(5)?,
+                    })
+                },
+            )
+            .optional()
     }
 
     /// Ends a running item. Does nothing if it was cancelled meanwhile.
@@ -124,9 +176,9 @@ impl Store {
             .query_row(
                 "UPDATE items SET status = 'running', result = 'Starting', process = 'thinking'
                  WHERE id = (SELECT id FROM items WHERE kind = 'job' AND status = 'queued' ORDER BY id LIMIT 1)
-                 RETURNING id, dump_id, detail, project",
+                 RETURNING id, dump_id, detail, project, tool",
                 [],
-                |r| Ok(Job { id: r.get(0)?, dump: r.get(1)?, prompt: r.get(2)?, project: r.get(3)? }),
+                |r| Ok(Job { id: r.get(0)?, dump: r.get(1)?, prompt: r.get(2)?, project: r.get(3)?, tool: r.get(4)? }),
             )
             .optional()
     }
@@ -168,7 +220,7 @@ impl Store {
     /// Today's items plus anything unfinished from earlier days, oldest first.
     pub fn briefing(&self) -> Result<Vec<Item>> {
         let mut q = self.0.prepare(
-            "SELECT id, kind, title, status, process, result, created, verdict, verdict_reason FROM items
+            "SELECT id, kind, title, status, process, result, created, verdict, verdict_reason, detail FROM items
              WHERE (day = date('now', 'localtime') AND status != 'dismissed')
                 OR (kind != 'instant' AND status IN ('queued', 'running', 'held', 'failed'))
              ORDER BY id",
@@ -184,6 +236,7 @@ impl Store {
                 created: r.get(6)?,
                 verdict: r.get(7)?,
                 verdict_reason: r.get(8)?,
+                detail: r.get(9)?,
             })
         })?
         .collect()
@@ -239,10 +292,10 @@ mod tests {
     #[test]
     fn jobs_queue_run_and_cancel() {
         let s = Store::open(Path::new(":memory:")).unwrap();
-        let first = s.add_job(None, "first", "do one", "my app").unwrap();
-        let second = s.add_job(None, "second", "do two", "").unwrap();
+        let first = s.add_job(None, "first", "do one", "my app", "").unwrap();
+        let second = s.add_job(None, "second", "do two", "", "").unwrap();
 
-        let job = Job { id: first, dump: None, prompt: "do one".into(), project: "my app".into() };
+        let job = Job { id: first, dump: None, prompt: "do one".into(), project: "my app".into(), tool: String::new() };
         assert_eq!(s.claim_job().unwrap(), Some(job));
         s.set_activity(first, "viewing", "Reading plan.md").unwrap();
         let item = &s.briefing().unwrap()[0];
@@ -263,5 +316,17 @@ mod tests {
         s.set_verdict(second, "concern", "Skipped part two.").unwrap();
         let item = &s.briefing().unwrap()[0];
         assert_eq!((item.verdict.as_str(), item.verdict_reason.as_str()), ("concern", "Skipped part two."));
+    }
+
+    #[test]
+    fn held_cards_are_taken_once() {
+        let s = Store::open(Path::new(":memory:")).unwrap();
+        let card = s.add_held("outward", None, "Send reply to Sam", "To: Sam\n\nYes!", "mcp__x__send", "").unwrap();
+        let item = &s.briefing().unwrap()[0];
+        assert_eq!((item.kind.as_str(), item.status.as_str(), item.detail.as_str()), ("outward", "held", "To: Sam\n\nYes!"));
+
+        let held = s.take_held(card, "done").unwrap().unwrap();
+        assert_eq!((held.title.as_str(), held.tool.as_str()), ("Send reply to Sam", "mcp__x__send"));
+        assert_eq!(s.take_held(card, "done").unwrap(), None); // a second click does nothing
     }
 }

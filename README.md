@@ -14,33 +14,57 @@ UI tokens: [design-system/engine/MASTER.md](design-system/engine/MASTER.md).
   - *instant*: opened right away;
   - *answer*: answered by Claude, shown under Done (click to expand);
   - *job*: handed to a background agent (see below);
-  - *outward* (send, post, upload, delete): held under Needs you, never run (approvals are phase 4).
+  - *outward* (send, post, upload, delete): an agent drafts it, and it comes back as an approval card.
 - The briefing has four sections: Now, Running, Needs you, Done. There is one briefing per day, and unfinished items
   carry over to the next day. Dismiss removes an item.
+- `Ctrl+Shift+Space` shows or hides Engine from anywhere; `Esc` hides it. Closing the window hides it to the tray;
+  quit from the tray icon's menu.
+
+Sorting and answers use the Claude Code CLI you're already signed in to (`claude` on your PATH), so there's no API
+key. Those calls run with `--safe-mode`, so your own Claude Code plugins, hooks and CLAUDE.md don't change them. The
+briefing is stored in `%APPDATA%\com.engine.desktop\engine.db`.
 
 ### Agents
 
 Each job runs as a headless Claude Code agent on Haiku, up to 3 at once (the rest queue). An agent works on its own:
 it searches and reads the web, reads and writes files, and runs commands. Running shows what it's doing right now,
 with an orb for the kind of step (thinking, viewing, searching, writing, working). When it finishes, its summary
-goes under Done and Engine opens anything it asked for: a website, an app or alias, or a file it made.
+goes under Done and Engine opens anything it asked for: a website, an app or alias, or a file it made. A second, quick
+check then reads the report against the task and marks it **Looks good** or **Concern**, with a reason.
 
 Agents get your own Claude Code setup: your CLAUDE.md, skills, plugins, MCP servers and claude.ai connectors (Gmail,
 Google Drive, Notion and so on). The one exception is superpowers, which is turned off for agents because its
 brainstorming step waits for a person to approve a design, and a background agent has nobody to ask.
 
+Each job gets its own folder under `%APPDATA%\com.engine.desktop\jobs\`, with the agent's full log in
+`agent-log.jsonl`. A job about one of your **projects** works in that project's folder instead. Cancel stops a running
+agent and everything it started; Retry re-runs a failed job.
+
+### Approvals and Needs you
+
 Agents are draft-only. Before every connector call, Claude Code runs `engine --guard`, which refuses outward tools:
 sending, replying, forwarding, posting, uploading, sharing, deleting, calendar invites and similar. Drafts and new
-documents are allowed. The outward shell commands Engine knows about (`git push`, `gh`) are blocked too. That's best
-effort, not a sandbox: an arbitrary script could still reach the network. Each job gets its own folder under
-`%APPDATA%\com.engine.desktop\jobs\`, with the agent's full log in `agent-log.jsonl`. Cancel stops a running agent
-and everything it started; Retry re-runs a failed job.
-- `Ctrl+Shift+Space` shows or hides Engine from anywhere; `Esc` hides it.
-- Closing the window hides it to the tray. Quit from the tray icon's menu.
+documents are allowed, and the outward shell commands Engine knows about (`git push`, `gh`) are blocked too. That's
+best effort, not a sandbox: an arbitrary script could still reach the network.
 
-Sorting and answers use the Claude Code CLI you're already signed in to (`claude` on your PATH), so there's no API
-key. The calls run with `--safe-mode`, so your own Claude Code plugins, hooks and CLAUDE.md don't change them. The
-briefing is stored in `%APPDATA%\com.engine.desktop\engine.db`.
+When a job needs an outward step, the agent prepares it and it appears under Needs you as an approval card showing
+exactly what would happen (recipient and full text for an email, for example):
+
+- **Approve** starts an agent that does exactly that action. The guard lets that one tool through, once.
+- **Revise** takes your note and has an agent redraft the card.
+- **Reject** drops it.
+
+When something needs you personally (record some clips, choose a platform), it appears as a task. If an agent should
+carry on afterwards, the card says what it will do, and **Done** starts it.
+
+### Settings
+
+- **Projects:** name a folder ("my app"), and dumps that mention it run there.
+- **Notes:** folders agents may read, with your Obsidian vault first. Jobs that mention your notes, subjects or
+  documents search them.
+- **Start with Windows:** Engine starts hidden in the tray when you sign in.
+
+Settings are saved in `%APPDATA%\com.engine.desktop\settings.json`.
 
 ## Aliases
 

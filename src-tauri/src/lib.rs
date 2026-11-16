@@ -184,10 +184,13 @@ fn start(app: &AppHandle, engine: &Engine, dump: i64, aliases: &[Target], item: 
         }
         Kind::Job => {
             let project = item.project.as_deref().unwrap_or_default();
-            log_err(engine.store().add_job(Some(dump), &item.title, &item.detail, project));
+            log_err(engine.store().add_job(Some(dump), &item.title, &item.detail, project, ""));
         }
         Kind::Outward => {
-            add("held", "Held for your approval. Approval cards arrive in a later update.");
+            // Nothing outward runs from a dump: an agent drafts it, and the draft comes back as an approval card.
+            let project = item.project.as_deref().unwrap_or_default();
+            let title = format!("Draft: {}", item.title);
+            log_err(engine.store().add_job(Some(dump), &title, &jobs::prepare_prompt(&item.detail), project, ""));
         }
     }
 }
@@ -220,12 +223,15 @@ fn run_job(app: &AppHandle, job: store::Job) {
         .filter(|f| f.is_dir())
         .unwrap_or_else(|| dir.clone());
     let notes = settings.knowledge_dirs();
+    let marker = dir.join("approved.once");
+    let approved = (!job.tool.is_empty()).then(|| (job.tool.as_str(), marker.as_path()));
     changed(app);
     let outcome = fs::create_dir_all(&dir).map_err(|e| format!("Couldn't make the job folder: {e}")).and_then(|()| {
         jobs::run(
             &work,
             &dir,
             &notes,
+            approved,
             &job.prompt,
             |pid| {
                 engine.jobs.lock().unwrap().insert(id, pid);
@@ -245,6 +251,12 @@ fn run_job(app: &AppHandle, job: store::Job) {
             let made = fs::read_dir(&dir).map_or(0, |d| d.flatten().filter(|f| f.file_name() != "agent-log.jsonl").count());
             let saved = if made > 0 { format!("\n\nSaved in {}", dir.display()) } else { String::new() };
             let summary = format!("{}{saved}", done.summary);
+            for p in &done.proposed {
+                log_err(engine.store().add_held("outward", dump, &p.action, &p.details, &p.tool, &job.project));
+            }
+            for t in &done.needs_you {
+                log_err(engine.store().add_held("task", dump, &t.task, &t.follow_up, "", &job.project));
+            }
             log_err(engine.store().finish(id, "done", &summary));
             Some((summary, done.open))
         }
@@ -366,6 +378,50 @@ fn retry(id: i64, app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Approve an approval card: an agent carries out exactly that action, with that one outward call allowed.
+#[tauri::command]
+fn approve(id: i64, app: AppHandle) -> Result<(), String> {
+    let engine = app.state::<Engine>();
+    let held = engine.store().take_held(id, "done").map_err(|e| e.to_string())?;
+    if let Some(h) = held.filter(|h| h.kind == "outward") {
+        let tool = if h.tool.is_empty() { "*" } else { h.tool.as_str() };
+        let prompt = jobs::approved_prompt(&h.title, &h.detail, &h.tool);
+        engine.store().add_job(h.dump, &h.title, &prompt, &h.project, tool).map_err(|e| e.to_string())?;
+        pump(&app);
+    }
+    changed(&app);
+    Ok(())
+}
+
+/// Revise an approval card: an agent redrafts it with the user's note and proposes it again.
+#[tauri::command]
+fn revise(id: i64, note: String, app: AppHandle) -> Result<(), String> {
+    let engine = app.state::<Engine>();
+    let held = engine.store().take_held(id, "dismissed").map_err(|e| e.to_string())?;
+    if let Some(h) = held.filter(|h| h.kind == "outward") {
+        let prompt = jobs::revise_prompt(&h.title, &h.detail, note.trim());
+        let title = format!("Revise: {}", h.title);
+        engine.store().add_job(h.dump, &title, &prompt, &h.project, "").map_err(|e| e.to_string())?;
+        pump(&app);
+    }
+    changed(&app);
+    Ok(())
+}
+
+/// The user did a needs-you task. If it had a follow-up, an agent picks it up now.
+#[tauri::command]
+fn task_done(id: i64, app: AppHandle) -> Result<(), String> {
+    let engine = app.state::<Engine>();
+    let held = engine.store().take_held(id, "done").map_err(|e| e.to_string())?;
+    if let Some(h) = held.filter(|h| h.kind == "task" && !h.detail.trim().is_empty()) {
+        let prompt = format!("The user has done this: {}\n\nNow: {}", h.title, h.detail);
+        engine.store().add_job(h.dump, &h.detail, &prompt, &h.project, "").map_err(|e| e.to_string())?;
+        pump(&app);
+    }
+    changed(&app);
+    Ok(())
+}
+
 #[tauri::command]
 fn get_settings(engine: State<Engine>) -> Result<settings::Settings, String> {
     settings::Settings::load(&engine.settings_path)
@@ -483,6 +539,9 @@ pub fn run() {
             dismiss,
             cancel,
             retry,
+            approve,
+            revise,
+            task_done,
             get_settings,
             save_settings,
             edit_aliases

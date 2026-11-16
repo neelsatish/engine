@@ -53,6 +53,7 @@ Kinds:
 Rules:
 - "Draft" or "prepare" is never outward. Only the actual sending, posting or uploading is. If one request asks for both, make two items.
 - Work that ends in opening something ("find the best X and open it") is one job, not a job plus an instant item.
+- Work that should only happen after the person does something themselves ("once I've recorded them, write the captions") belongs inside the same job, never as its own item: that agent will ask the person to do their part and hand the rest back as a follow-up.
 - One item per distinct request. Do not invent, merge or skip requests. Ignore greetings such as "hey Engine".
 - title: a short imperative under 60 characters, in the person's language."#;
 
