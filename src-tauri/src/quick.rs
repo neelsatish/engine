@@ -41,12 +41,54 @@ fn clean(input: &str) -> String {
 pub fn stop_all(input: &str) -> bool {
     let s = clean(input).replace(['\u{2019}', '\''], "");
     [
-        "stop", "stop it", "stop everything", "stop all", "stop all processes", "stop all tasks", "stop all agents",
-        "stop all jobs", "stop whatevers going on", "stop whatever is going on", "stop what youre doing",
-        "stop what you are doing", "cancel everything", "cancel all",
-        "cancel all tasks", "be quiet", "quiet", "shut up", "stop talking", "never mind", "nevermind",
+        "stop everything", "stop all", "stop all processes", "stop all tasks", "stop all agents", "stop all jobs",
+        "stop whatevers going on", "stop whatever is going on", "stop what youre doing", "stop what you are doing",
+        "cancel everything", "cancel all", "cancel all tasks",
     ]
     .contains(&s.as_str())
+}
+
+/// "Stop", "quiet", "never mind": stop talking only. Agents keep working; "stop everything" ends those.
+pub fn hush(input: &str) -> bool {
+    let s = clean(input).replace(['\u{2019}', '\''], "");
+    ["stop", "stop it", "be quiet", "quiet", "shut up", "stop talking", "never mind", "nevermind", "thats enough", "enough"]
+        .contains(&s.as_str())
+}
+
+/// "Timer 10 minutes", "set a timer for 90 seconds", "5 minute timer": the minutes (rounded up), or None.
+pub fn timer(input: &str) -> Option<u32> {
+    let s = clean(input);
+    if !s.contains("timer") {
+        return None;
+    }
+    let words: Vec<&str> = s.split(|c: char| c.is_whitespace() || c == '-').filter(|w| !w.is_empty()).collect();
+    let number = |w: &str| -> Option<f32> {
+        w.parse::<f32>().ok().or(match w {
+            "a" | "an" | "one" => Some(1.0),
+            "two" => Some(2.0),
+            "three" => Some(3.0),
+            "five" => Some(5.0),
+            "ten" => Some(10.0),
+            "fifteen" => Some(15.0),
+            "twenty" => Some(20.0),
+            "thirty" => Some(30.0),
+            "half" => Some(0.5),
+            _ => None,
+        })
+    };
+    let mut total = 0.0;
+    for (i, w) in words.iter().enumerate() {
+        let Some(n) = number(w) else { continue };
+        let unit = words.get(i + 1).copied().unwrap_or_default();
+        let unit = if unit == "an" { words.get(i + 2).copied().unwrap_or_default() } else { unit };
+        total += match unit.trim_end_matches('s') {
+            "minute" | "min" => n,
+            "second" | "sec" => n / 60.0,
+            "hour" | "hr" => n * 60.0,
+            _ => 0.0,
+        };
+    }
+    (total > 0.0).then(|| total.ceil() as u32)
 }
 
 /// "Mark all briefings as completed", "clear the briefing": clears every finished or waiting item.
@@ -228,7 +270,13 @@ mod tests {
         assert!(stop_all("Stop whatever’s going on."));
         assert!(stop_all("Engine, stop all processes"));
         assert!(!stop_all("stop the music")); // that's a media key, handled by parse
+        assert!(!stop_all("stop") && hush("Stop.") && hush("never mind")); // plain "stop" only silences Engine
         assert!(!stop_all("stop by the shop at 5"));
+        assert_eq!(timer("timer 10 minutes"), Some(10));
+        assert_eq!(timer("Engine, set a timer for 90 seconds"), Some(2));
+        assert_eq!(timer("5 minute timer"), Some(5));
+        assert_eq!(timer("set a timer for an hour"), Some(60));
+        assert_eq!(timer("what's a timer"), None);
         assert!(clear_briefing("Mark all briefings as completed"));
         assert!(clear_briefing("clear the briefing"));
         assert!(clear_briefing("mark everything as done"));

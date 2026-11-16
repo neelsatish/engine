@@ -38,7 +38,7 @@
   }
 </script>
 
-<svelte:window onclick={outside} onkeydown={(e) => e.key === "Escape" && open && ((open = false), e.stopPropagation())} />
+<svelte:window onclick={outside} onkeydown={(e) => e.key === "Escape" && open && ((open = false), e.preventDefault())} />
 
 <div class="wrap" bind:this={wrap}>
   <button

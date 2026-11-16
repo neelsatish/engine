@@ -7,7 +7,28 @@
   import { tick } from "svelte";
   import ModelMenu from "$lib/ModelMenu.svelte";
   import Orb, { type Process } from "$lib/Orb.svelte";
-  import { engine, savePrefs, submit as send, type Item, type Reply, type Target } from "$lib/state.svelte";
+  import { engine, running, savePrefs, submit as send, type Item, type Reply, type Target } from "$lib/state.svelte";
+
+  // The status line over the prompt: what Engine is doing right now, in every view.
+  const SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+  let frame = $state(0);
+  let since = $state(0);
+  const agents = $derived(running());
+  const hud = $derived.by(() => {
+    if (engine.voice === "listening") return { kind: "listen", text: engine.heard.at(-1)?.text ? `“${engine.heard.at(-1)?.text}”` : "listening…" };
+    if (engine.voice === "transcribing") return { kind: "work", text: "catching that…" };
+    if (engine.sorting > 0) return { kind: "work", text: "thinking…" };
+    if (agents.length === 1) return { kind: "work", text: `${agents[0].title} · ${agents[0].result || "starting"}` };
+    if (agents.length > 1) return { kind: "work", text: `${agents.length} agents working` };
+    return null;
+  });
+  $effect(() => {
+    if (!hud) return;
+    since = Date.now();
+    const t = setInterval(() => (frame = (frame + 1) % SPIN.length), 90);
+    return () => clearInterval(t);
+  });
+  const elapsed = $derived(hud && frame >= 0 ? Math.floor((Date.now() - since) / 1000) : 0);
 
   let text = $state("");
   let input: HTMLTextAreaElement;
@@ -254,6 +275,20 @@
     {/if}
   </div>
 
+  {#if hud}
+    <div class="hud" class:listen={hud.kind === "listen"} role="status" aria-live="polite">
+      {#if hud.kind === "listen"}
+        <span class="bars" aria-hidden="true">
+          {#each [0.6, 1, 0.75, 0.9, 0.5] as k, n (n)}<i style="height: {3 + Math.min(1, engine.level * 1.6) * k * 11}px"></i>{/each}
+        </span>
+      {:else}
+        <span class="spin" aria-hidden="true">{SPIN[frame]}</span>
+      {/if}
+      <span class="hud-text">{hud.text}</span>
+      {#if hud.kind === "work" && elapsed > 1}<span class="secs">{elapsed}s</span>{/if}
+    </div>
+  {/if}
+
   {#if choices.length}
     <div class="chips">
       {#each choices as c (c.target)}
@@ -404,7 +439,7 @@
     flex-direction: column;
     gap: 6px;
     min-height: 0;
-    padding: 0 2px 10px;
+    padding: 6px 4px 10px; /* clear of the CRT's curved corners */
     overflow-y: auto;
     scrollbar-width: thin;
     scrollbar-color: var(--pane-border) transparent;
@@ -569,6 +604,54 @@
   .empty .hint {
     color: var(--text-muted);
     font-size: 12px;
+  }
+
+  .hud {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 22px;
+    padding: 0 2px 6px;
+    color: var(--pane-label);
+    font-size: 12px;
+  }
+
+  .hud.listen {
+    color: var(--meter-hi);
+  }
+
+  .spin {
+    width: 1.5ch;
+    color: var(--accent);
+  }
+
+  .bars {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    width: 1.5ch;
+    height: 16px;
+  }
+
+  .bars i {
+    width: 2px;
+    border-radius: 1px;
+    background: currentColor;
+    transition: height 80ms linear;
+  }
+
+  .hud-text {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text-secondary);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .secs {
+    color: var(--text-muted);
+    font-size: 11px;
   }
 
   .chips {

@@ -176,6 +176,32 @@ fn handle_dump(app: &AppHandle, text: &str) -> Reply {
     if quick::stop_all(text) {
         return stop_all(app, dump);
     }
+    if quick::hush(text) {
+        stop_speech(&engine);
+        log_err(engine.store().add_item(Some(dump), "instant", "Stop talking", "", "done", "Quiet now"));
+        changed(app);
+        return Reply::Opened { name: "Quiet now".into() };
+    }
+    // An app's name on its own ("Google Chrome", "Claude") opens it, before quick commands can read "google …" as
+    // a web search.
+    if let Some(t) = named_app(&engine, text, &aliases) {
+        return open_reply(app, Some(dump), t);
+    }
+    if let Some(minutes) = quick::timer(text) {
+        let (now, _) = engine.store().now().map_err(|e| e.to_string()).unwrap_or_default();
+        let at = engine.store().add_minutes(&now, minutes as i64).unwrap_or_default();
+        let end = engine.store().add_minutes(&at, 1).unwrap_or_else(|_| at.clone());
+        let label = format!("{minutes} minute timer");
+        let block = schedule::Block { title: label.clone(), start: at.clone(), end, kind: "reminder".into(), ..Default::default() };
+        let done = match log_err(engine.store().save_block(block)) {
+            Some(_) => format!("Timer set: {minutes} min, done at {}", at.get(11..16).unwrap_or(&at)),
+            None => "Couldn't set the timer".into(),
+        };
+        log_err(engine.store().add_item(Some(dump), "instant", &label, "", "done", &done));
+        let _ = app.emit("schedule", ());
+        changed(app);
+        return Reply::Opened { name: done };
+    }
     if quick::clear_briefing(text) {
         let n = log_err(engine.store().clear_briefing()).unwrap_or(0);
         let done = format!("Cleared {n} item{} from the briefing", if n == 1 { "" } else { "s" });
@@ -201,10 +227,6 @@ fn handle_dump(app: &AppHandle, text: &str) -> Reply {
             // Several requests in one, or a site with no alias: the router sorts it out.
             Match::Nothing => {}
         }
-    }
-    // An app's name on its own ("Claude", "Spotify") opens it.
-    if let Some(t) = named_app(&engine, text, &aliases) {
-        return open_reply(app, Some(dump), t);
     }
 
     let shortcuts: Vec<String> = aliases.iter().map(|a| a.name.clone()).collect();
@@ -284,6 +306,18 @@ impl Voice {
     }
 }
 
+/// Whether the person asked to open, play or go to something, or named the thing itself, so an instant item from
+/// the router is really wanted.
+fn asked_to_open(said: &str, target: &str) -> bool {
+    let s = said.to_lowercase();
+    let squash = |t: &str| t.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect::<String>();
+    let name = squash(target);
+    ["open", "launch", "start", "go to", "pull up", "bring up", "show me", "play", "pause", "search", "watch", "volume", "mute", "lock", "next", "skip"]
+        .iter()
+        .any(|v| s.contains(v))
+        || (name.len() >= 3 && squash(&s).contains(&name))
+}
+
 /// One app or shortcut for `query`, the way "open X" picks it.
 fn resolve_one(engine: &Engine, query: &str, aliases: &[Target]) -> Option<Target> {
     match engine.find(query, aliases) {
@@ -337,6 +371,13 @@ fn start(app: &AppHandle, engine: &Engine, dump: i64, aliases: &[Target], folder
                     add("failed", &format!("Couldn't find “{}” to close.", item.detail));
                 }
             }
+        }
+        // The router named something to open, but the person never asked to open anything ("wsp" isn't WhatsApp):
+        // answer them instead.
+        Kind::Instant if !asked_to_open(&engine.store().dump_text(dump).unwrap_or_default(), &item.detail) => {
+            let said = engine.store().dump_text(dump).unwrap_or_default();
+            let chat = router::Item { kind: Kind::Answer, title: said.chars().take(60).collect(), detail: said, ..item };
+            start(app, engine, dump, aliases, folder, chat, voice);
         }
         Kind::Instant => {
             let site = item.url.clone().filter(|u| u.starts_with("https://") || u.starts_with("http://"));
@@ -887,7 +928,7 @@ fn worth_acting(text: &str) -> bool {
 /// Whether a phrase is something Engine does instantly with no model: a quick command, "stop everything", or
 /// opening one exact app or shortcut. Those run the moment they're heard.
 fn instant_command(engine: &Engine, text: &str) -> bool {
-    if quick::parse(text).is_some() || quick::stop_all(text) {
+    if quick::parse(text).is_some() || quick::stop_all(text) || quick::hush(text) {
         return true;
     }
     let aliases = engine.aliases().unwrap_or_default();
@@ -914,14 +955,11 @@ fn reveal(app: &AppHandle) {
     }
 }
 
-/// Whether Engine is busy with the microphone or speaking, so the wake word listener should ignore what it hears.
+/// Whether push-to-talk has the microphone, so the wake word listener should ignore what it hears. Engine talking
+/// doesn't count: "Engine, stop" must still be heard over it. (A busy voice helper used to count too, which made
+/// the listener go deaf for whole replies and right after "Yes sir?".)
 fn voice_busy(engine: &Engine) -> bool {
-    let talking = engine.speaking.lock().unwrap().as_mut().is_some_and(|c| matches!(c.try_wait(), Ok(None)));
-    // The helper is held while it speaks in Kokoro or Chatterbox, or transcribes a push-to-talk recording.
-    talking
-        || voice::PLAYING.load(std::sync::atomic::Ordering::Relaxed)
-        || engine.recording.lock().unwrap().is_some()
-        || engine.helper.try_lock().is_err()
+    engine.recording.lock().unwrap().is_some()
 }
 
 /// The wake word listener: while it's on, the microphone stays open and each burst of speech is transcribed.
@@ -1020,7 +1058,11 @@ fn wake_loop(app: &AppHandle) {
             continue;
         }
         said = rest; // "Engine, can you open…": the rest comes after "Yes sir?"
-        say_short(&engine, "Yes sir?");
+        // Only the ready-made clip: making it now would leave the person waiting in silence.
+        let clip = said_clip(&engine, "Yes sir?");
+        if clip.is_file() {
+            voice::play(&clip);
+        }
         rec.clear(); // don't hear our own reply
         gate.reset();
         follow = Some(Instant::now() + Duration::from_secs(8));
@@ -1170,8 +1212,13 @@ fn narrator(app: AppHandle, lines: std::sync::mpsc::Receiver<narrate::Line>) {
     while let Ok(first) = lines.recv() {
         let mut batch = vec![first];
         batch.extend(lines.try_iter());
+        // "Talk me through tasks" off silences the progress words only: answers asked for aloud and reminders
+        // are still said.
         if !engine.settings().voice.narrate {
-            continue;
+            batch.retain(|l| matches!(l, Line::Overview(_)));
+            if batch.is_empty() {
+                continue;
+            }
         }
         // Wait while the person is talking to Engine (up to a minute), then say what's still worth saying.
         for _ in 0..300 {
@@ -1503,6 +1550,9 @@ pub fn run() {
                     use tauri_plugin_notification::NotificationExt;
                     let _ = ticker.notification().builder().title("Engine reminder").body(&r.title).show();
                     let _ = ticker.emit("schedule", ());
+                    // Spoken too, since the person set it: "Sir, your 5 minute timer is done."
+                    let line = if r.title.ends_with("timer") { format!("Sir, your {} is done.", r.title) } else { format!("Sir, a reminder: {}.", r.title) };
+                    tell(narrate::Line::Overview(line));
                 }
             });
 

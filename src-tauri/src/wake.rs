@@ -21,9 +21,11 @@ pub fn command(heard: &str) -> Option<String> {
         .take(2)
         .collect();
     let is = |i: usize, w: &str| words.get(i).is_some_and(|(_, x)| x.eq_ignore_ascii_case(w));
-    let wake = if is(0, "engine") {
+    // Whisper sometimes spells the word as it sounds.
+    let engine = |i: usize| ["engine", "engin", "enjin", "enjine"].iter().any(|w| is(i, w));
+    let wake = if engine(0) {
         0
-    } else if GREETINGS.iter().any(|g| is(0, g)) && is(1, "engine") {
+    } else if GREETINGS.iter().any(|g| is(0, g)) && engine(1) {
         1
     } else {
         return None;

@@ -81,7 +81,8 @@
   }
 
   function onKey(e: KeyboardEvent) {
-    if (e.key === "Escape") getCurrentWindow().hide();
+    // Esc closes an open menu first; only with nothing open does it hide Engine.
+    if (e.key === "Escape" && !e.defaultPrevented && !document.querySelector('[aria-expanded="true"]')) getCurrentWindow().hide();
     if (e.altKey && e.key >= "1" && e.key <= "4") {
       e.preventDefault();
       engine.view = VIEWS[Number(e.key) - 1].id;

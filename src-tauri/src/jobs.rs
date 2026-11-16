@@ -71,7 +71,11 @@ pub struct Tune {
 /// Whether an MCP tool acts outward: others would see it, or it can't be undone. Matched on whole words of the
 /// tool's own name, so `list-comments`, `sharepoint_search` and `create_reply_draft` stay allowed.
 pub fn outward(tool: &str) -> bool {
-    let Some((_, name)) = tool.strip_prefix("mcp__").and_then(|t| t.split_once("__")) else { return false };
+    let Some((server, name)) = tool.strip_prefix("mcp__").and_then(|t| t.split_once("__")) else { return false };
+    // Driving a real browser or the desktop can click Send on anything, so those tools need approval too.
+    if ["computer-use", "computer_use", "claude-in-chrome", "claude_in_chrome", "Claude_Browser"].contains(&server) {
+        return !matches!(name, "screenshot" | "read_page" | "get_page_text" | "find" | "tabs_context" | "tabs_context_mcp");
+    }
     let name = name.to_lowercase();
     let words: Vec<&str> = name.split(['_', '-']).filter(|w| !w.is_empty()).collect();
     let has = |list: &[&str]| words.iter().any(|w| list.contains(w));
@@ -90,7 +94,7 @@ pub fn outward(tool: &str) -> bool {
         || destroys
         || has(&[
             "reply", "forward", "post", "publish", "upload", "share", "invite", "comment", "respond", "cancel", "spam",
-            "move", "rename", "merge", "resolve", "resolved", "set", "pay", "purchase",
+            "move", "rename", "merge", "resolve", "resolved", "set", "pay", "purchase", "update", "restore", "edit",
         ])
 }
 
@@ -617,6 +621,9 @@ mod tests {
             "mcp__claude_ai_Canva__publish-brand-template",
             "mcp__Roblox_Studio__upload_image",
             "mcp__nvidia-app__nvapp_client_set_laptop_feature",
+            "mcp__computer-use__left_click",
+            "mcp__claude-in-chrome__form_input",
+            "mcp__claude_ai_Notion__notion-update-page",
         ];
         let allowed = [
             "mcp__claude_ai_Gmail__create_draft",
@@ -634,6 +641,8 @@ mod tests {
             "mcp__claude_ai_Canva__generate-design",
             "mcp__claude_ai_Canva__remove-background",
             "mcp__Roblox_Studio__script_read",
+            "mcp__claude-in-chrome__get_page_text",
+            "mcp__computer-use__screenshot",
             "Bash",
         ];
         for t in blocked {

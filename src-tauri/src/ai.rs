@@ -165,7 +165,7 @@ pub fn ask_local(system: &str, prompt: &str, schema: Option<&str>) -> Result<Val
         body["format"] = serde_json::from_str(schema).map_err(|e| e.to_string())?;
     }
     let reply: Value = ureq::post(&format!("{OLLAMA}/api/chat"))
-        .timeout(std::time::Duration::from_secs(180))
+        .timeout(std::time::Duration::from_secs(30)) // a stuck local model falls back to Claude instead of hanging
         .send_json(body)
         .map_err(|e| format!("The local model isn't available ({e}). Is Ollama running?"))?
         .into_json()

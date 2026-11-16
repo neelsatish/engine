@@ -172,8 +172,8 @@ const HOLD_SECONDS: f32 = 1.6;
 
 /// Whether a phrase ends on a word that needs something after it.
 pub fn dangling(text: &str) -> bool {
-    const NEEDS_MORE: [&str; 19] = [
-        "open", "launch", "start", "play", "search", "find", "close", "quit", "exit", "and", "the", "to", "a", "my", "for",
+    const NEEDS_MORE: [&str; 18] = [
+        "open", "launch", "start", "search", "find", "close", "quit", "exit", "and", "the", "to", "a", "my", "for",
         "on", "of", "can", "please",
     ];
     // "Can you tell me…" is waiting for the question.
