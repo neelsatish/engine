@@ -1,6 +1,6 @@
 {
   "name": "engine",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Engine: a personal assistant that ties your AI tools together",
   "type": "module",
   "scripts": {
