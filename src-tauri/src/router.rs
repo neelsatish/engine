@@ -77,9 +77,21 @@ pub fn parse(out: serde_json::Value) -> Result<Vec<Item>, String> {
 
 pub fn answer_system(today: &str) -> String {
     format!(
-        "You are Engine, a personal assistant. Today is {today}. Answer completely but briefly. \
-         Write plain text: short lines and \"- \" bullets. No markdown headings, bold, tables or code fences."
+        "You are Engine, a personal assistant. Today is {today}. Answer completely but briefly in text. \
+         Write plain text: short lines and \"- \" bullets. No markdown headings, bold, tables or code fences. \
+         If the answer is a plan with days and times (a study plan, a schedule), also list each session in schedule: \
+         title, start and end as local times \"YYYY-MM-DDTHH:MM\" (pick sensible times, starting from tomorrow unless \
+         asked otherwise), and kind (study, deadline, test, recording or other). Leave schedule empty otherwise."
     )
+}
+
+pub const ANSWER_SCHEMA: &str = r#"{"type":"object","properties":{"text":{"type":"string"},"schedule":{"type":"array","items":{"type":"object","properties":{"title":{"type":"string"},"start":{"type":"string"},"end":{"type":"string"},"kind":{"type":"string","enum":["study","deadline","test","recording","other"]}},"required":["title","start","end","kind"]}}},"required":["text"]}"#;
+
+/// Reads a structured answer as its text and any plan sessions.
+pub fn parse_answer(out: &serde_json::Value) -> (String, Vec<crate::schedule::Block>) {
+    let text = out["text"].as_str().or(out.as_str()).unwrap_or_default().trim().to_string();
+    let schedule = out.get("schedule").cloned().and_then(|s| serde_json::from_value(s).ok()).unwrap_or_default();
+    (text, schedule)
 }
 
 #[cfg(test)]
@@ -98,6 +110,14 @@ mod tests {
         assert_eq!(items[0].url.as_deref(), Some("https://youtube.com"));
         assert_eq!(items[1].url, None);
         assert!(parse(json!({"items": [{"kind": "other", "title": "x", "detail": "y"}]})).is_err());
+    }
+
+    #[test]
+    fn parses_answers_with_plans() {
+        let (text, plan) = parse_answer(&json!({"text": " Plan: ", "schedule": [
+            {"title": "Organic", "start": "2026-11-17T16:00", "end": "2026-11-17T17:00", "kind": "study"}]}));
+        assert_eq!((text.as_str(), plan.len()), ("Plan:", 1));
+        assert!(parse_answer(&json!({"text": "Hi"})).1.is_empty());
     }
 
     /// Calls the real router through Claude Code. Run with `cargo test -- --ignored`.

@@ -10,11 +10,13 @@
   import Briefing from "$lib/Briefing.svelte";
   import MatrixRain from "$lib/MatrixRain.svelte";
   import Orb from "$lib/Orb.svelte";
+  import Schedule from "$lib/Schedule.svelte";
   import Settings from "$lib/Settings.svelte";
 
-  type View = "briefing" | "settings";
+  type View = "briefing" | "schedule" | "settings";
   const VIEWS: { id: View; label: string }[] = [
     { id: "briefing", label: "Briefing" },
+    { id: "schedule", label: "Schedule" },
     { id: "settings", label: "Settings" },
   ];
 
@@ -108,6 +110,8 @@
 
   {#if view === "briefing"}
     <Briefing bind:this={briefing} />
+  {:else if view === "schedule"}
+    <Schedule />
   {:else}
     <Settings onEditAliases={editAliases} />
   {/if}

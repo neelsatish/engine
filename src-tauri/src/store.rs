@@ -5,6 +5,7 @@
 
 use rusqlite::{Connection, OptionalExtension, Result, params};
 use serde::Serialize;
+use crate::schedule::Block;
 use std::path::Path;
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -67,7 +68,16 @@ CREATE TABLE IF NOT EXISTS items (
     result  TEXT NOT NULL DEFAULT '',
     created TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
     day     TEXT NOT NULL DEFAULT (date('now', 'localtime'))
-);";
+);
+CREATE TABLE IF NOT EXISTS blocks (
+    id      INTEGER PRIMARY KEY,
+    title   TEXT NOT NULL,
+    start   TEXT NOT NULL,
+    end     TEXT NOT NULL,
+    kind    TEXT NOT NULL DEFAULT 'other',
+    note    TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS blocks_start ON blocks(start);";
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
@@ -242,6 +252,43 @@ impl Store {
         .collect()
     }
 
+    /// Blocks that overlap [from, to), earliest first. Times are "YYYY-MM-DDTHH:MM".
+    pub fn blocks(&self, from: &str, to: &str) -> Result<Vec<Block>> {
+        let mut q = self.0.prepare(
+            "SELECT id, title, start, end, kind, note FROM blocks WHERE start < ?2 AND end > ?1 ORDER BY start, id",
+        )?;
+        q.query_map(params![from, to], |r| {
+            Ok(Block { id: r.get(0)?, title: r.get(1)?, start: r.get(2)?, end: r.get(3)?, kind: r.get(4)?, note: r.get(5)? })
+        })?
+        .collect()
+    }
+
+    /// Adds a block (id 0) or updates one, and returns it with its id. The caller tidies it first.
+    pub fn save_block(&self, mut b: Block) -> Result<Block> {
+        if b.id == 0 {
+            self.0.execute(
+                "INSERT INTO blocks (title, start, end, kind, note) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![b.title, b.start, b.end, b.kind, b.note],
+            )?;
+            b.id = self.0.last_insert_rowid();
+        } else {
+            self.0.execute(
+                "UPDATE blocks SET title = ?2, start = ?3, end = ?4, kind = ?5, note = ?6 WHERE id = ?1",
+                params![b.id, b.title, b.start, b.end, b.kind, b.note],
+            )?;
+        }
+        Ok(b)
+    }
+
+    pub fn title(&self, id: i64) -> Result<Option<String>> {
+        self.0.query_row("SELECT title FROM items WHERE id = ?1", [id], |r| r.get(0)).optional()
+    }
+
+    pub fn delete_block(&self, id: i64) -> Result<()> {
+        self.0.execute("DELETE FROM blocks WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
     /// The local date for prompts, e.g. "Monday 2026-11-16".
     pub fn today(&self) -> Result<String> {
         let (weekday, date): (i64, String) = self.0.query_row(
@@ -316,6 +363,23 @@ mod tests {
         s.set_verdict(second, "concern", "Skipped part two.").unwrap();
         let item = &s.briefing().unwrap()[0];
         assert_eq!((item.verdict.as_str(), item.verdict_reason.as_str()), ("concern", "Skipped part two."));
+    }
+
+    #[test]
+    fn blocks_by_range() {
+        let s = Store::open(Path::new(":memory:")).unwrap();
+        let block = |t: &str, a: &str, b: &str| Block { title: t.into(), start: a.into(), end: b.into(), kind: "study".into(), ..Default::default() };
+        let mon = s.save_block(block("Mon", "2026-11-16T09:00", "2026-11-16T10:00")).unwrap();
+        s.save_block(block("Late", "2026-11-16T23:30", "2026-11-17T00:30")).unwrap();
+        s.save_block(block("Wed", "2026-11-18T09:00", "2026-11-18T10:00")).unwrap();
+        let titles = |from, to| s.blocks(from, to).unwrap().into_iter().map(|b| b.title).collect::<Vec<_>>();
+        assert_eq!(titles("2026-11-17T00:00", "2026-11-18T00:00"), ["Late"]); // spans midnight
+        assert_eq!(titles("2026-11-16T00:00", "2026-11-23T00:00"), ["Mon", "Late", "Wed"]);
+
+        s.save_block(Block { title: "Monday".into(), ..mon.clone() }).unwrap();
+        assert_eq!(titles("2026-11-16T00:00", "2026-11-16T12:00"), ["Monday"]);
+        s.delete_block(mon.id).unwrap();
+        assert!(titles("2026-11-16T00:00", "2026-11-16T12:00").is_empty());
     }
 
     #[test]

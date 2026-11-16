@@ -4,6 +4,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { onMount } from "svelte";
   import Orb, { type Process } from "$lib/Orb.svelte";
+  import { type Block, todayRange } from "$lib/time";
 
   type Target = { name: string; target: string };
   type Reply =
@@ -31,6 +32,7 @@
   let items = $state<Item[]>([]);
   let input: HTMLTextAreaElement;
   let revising = $state<number | null>(null);
+  let today = $state<Block[]>([]);
   let reviseNote = $state("");
 
   // Shown while the briefing is empty: one click puts an example in the dump box.
@@ -59,6 +61,10 @@
     } catch (e) {
       note = `Couldn't load the briefing: ${e}`;
     }
+  }
+
+  async function loadToday() {
+    today = await invoke<Block[]>("blocks", todayRange()).catch(() => []);
   }
 
   function show(reply: Reply, said = "") {
@@ -128,8 +134,9 @@
   onMount(() => {
     input.focus();
     load();
-    const off = listen("briefing", load);
-    return () => off.then((f) => f());
+    loadToday();
+    const offs = [listen("briefing", load), listen("schedule", loadToday)];
+    return () => offs.forEach((off) => off.then((f) => f()));
   });
 </script>
 
@@ -176,6 +183,20 @@
 {/if}
 
 <div class="scroll" aria-live="polite">
+  {#if today.length}
+    <section class="card glass">
+      <h2>Today <span class="count">{today.length}</span></h2>
+      <ul class="rows">
+        {#each today as b (b.id)}
+          <li>
+            <span class="indicator"><span class="kind {b.kind}" aria-hidden="true"></span></span>
+            <span class="text body">{b.title}</span>
+            <time>{b.start.slice(11, 16)}–{b.end.slice(11, 16)}</time>
+          </li>
+        {/each}
+      </ul>
+    </section>
+  {/if}
   {#each sections as s (s.name)}
     <section class="card glass">
       <h2>{s.name} <span class="count">{s.items.length}</span></h2>
@@ -265,6 +286,7 @@
       </ul>
     </section>
   {:else}
+    {#if !today.length}
     <section class="card glass empty">
       <img src="/logo.svg" alt="" width="40" height="40" />
       <p>Nothing yet today. Dump anything above, or try one:</p>
@@ -280,6 +302,7 @@
         {/each}
       </div>
     </section>
+    {/if}
   {/each}
 </div>
 
@@ -450,6 +473,18 @@
     overflow-wrap: anywhere;
     user-select: text;
   }
+
+  .kind {
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    background: #9f9ab8;
+  }
+
+  .kind.study { background: #8e90f5; }
+  .kind.test { background: #f0718a; }
+  .kind.deadline { background: #f2b85c; }
+  .kind.recording { background: #5fd4a0; }
 
   .proposal {
     max-height: 200px;

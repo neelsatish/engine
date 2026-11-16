@@ -2,6 +2,7 @@ pub mod ai;
 pub mod jobs;
 pub mod launcher;
 pub mod router;
+pub mod schedule;
 pub mod settings;
 pub mod store;
 
@@ -169,13 +170,18 @@ fn start(app: &AppHandle, engine: &Engine, dump: i64, aliases: &[Target], item: 
         }
         Kind::Answer => {
             let Some(id) = add("running", "") else { return };
-            let (app, question) = (app.clone(), item.detail.clone());
+            let (app, question, title) = (app.clone(), item.detail.clone(), item.title.clone());
             std::thread::spawn(move || {
                 let engine = app.state::<Engine>();
                 let today = engine.store().today().unwrap_or_default();
                 let system = router::answer_system(&today);
-                let (status, result) = match ai::ask(&engine.work_dir, router::ANSWER_MODEL, &system, &question, None) {
-                    Ok(reply) => ("done", reply.as_str().unwrap_or_default().trim().to_string()),
+                let reply = ai::ask(&engine.work_dir, router::ANSWER_MODEL, &system, &question, Some(router::ANSWER_SCHEMA));
+                let (status, result) = match reply {
+                    Ok(out) => {
+                        let (text, plan) = router::parse_answer(&out);
+                        let added = add_plan(&app, &title, &text, plan);
+                        ("done", if added > 0 { format!("{text}\n\nAdded {added} blocks to your schedule.") } else { text })
+                    }
                     Err(e) => ("failed", e),
                 };
                 log_err(engine.store().finish(id, status, &result));
@@ -257,6 +263,8 @@ fn run_job(app: &AppHandle, job: store::Job) {
             for t in &done.needs_you {
                 log_err(engine.store().add_held("task", dump, &t.task, &t.follow_up, "", &job.project));
             }
+            let added = add_plan(app, &job_title(&engine, id), &done.summary, done.schedule);
+            let summary = if added > 0 { format!("{summary}\n\nAdded {added} blocks to your schedule.") } else { summary };
             log_err(engine.store().finish(id, "done", &summary));
             Some((summary, done.open))
         }
@@ -272,6 +280,34 @@ fn run_job(app: &AppHandle, job: store::Job) {
     if let Some((summary, opened)) = report {
         audit(app, id, &job.prompt, &summary, &opened);
     }
+}
+
+/// Adds a plan's sessions to the schedule and, when a vault is set, writes the plan as an Obsidian note.
+/// Returns how many blocks were added. Blocks with unreadable times are skipped.
+fn add_plan(app: &AppHandle, title: &str, summary: &str, plan: Vec<schedule::Block>) -> usize {
+    let blocks: Vec<schedule::Block> = plan.into_iter().filter_map(|b| b.tidy().ok()).collect();
+    if blocks.is_empty() {
+        return 0;
+    }
+    let engine = app.state::<Engine>();
+    let note = engine
+        .settings()
+        .knowledge_dirs()
+        .first()
+        .and_then(|vault| schedule::write_note(Path::new(vault), title, summary, &blocks).map_err(|e| eprintln!("{e}")).ok())
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let added = blocks
+        .into_iter()
+        .filter_map(|b| log_err(engine.store().save_block(schedule::Block { note: note.clone(), ..b })))
+        .count();
+    let _ = app.emit("schedule", ());
+    added
+}
+
+/// A job's title, for naming its plan note.
+fn job_title(engine: &Engine, id: i64) -> String {
+    engine.store().title(id).ok().flatten().unwrap_or_else(|| "Plan".into())
 }
 
 /// Checks a finished job against its task and records "good" or "concern" with a reason.
@@ -423,6 +459,25 @@ fn task_done(id: i64, app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn blocks(from: String, to: String, engine: State<Engine>) -> Result<Vec<schedule::Block>, String> {
+    engine.store().blocks(&from, &to).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn save_block(block: schedule::Block, app: AppHandle) -> Result<schedule::Block, String> {
+    let saved = app.state::<Engine>().store().save_block(block.tidy()?).map_err(|e| e.to_string())?;
+    let _ = app.emit("schedule", ());
+    Ok(saved)
+}
+
+#[tauri::command]
+fn delete_block(id: i64, app: AppHandle) -> Result<(), String> {
+    app.state::<Engine>().store().delete_block(id).map_err(|e| e.to_string())?;
+    let _ = app.emit("schedule", ());
+    Ok(())
+}
+
+#[tauri::command]
 fn get_settings(engine: State<Engine>) -> Result<settings::Settings, String> {
     settings::Settings::load(&engine.settings_path)
 }
@@ -542,6 +597,9 @@ pub fn run() {
             approve,
             revise,
             task_done,
+            blocks,
+            save_block,
+            delete_block,
             get_settings,
             save_settings,
             edit_aliases

@@ -27,12 +27,15 @@ step, put it in proposed instead of doing it: action (a short title such as \"Se
 what would happen: recipient, subject and full text for a message; file, title and visibility for an upload) and tool \
 (the exact tool you would use, such as mcp__claude_ai_Gmail__send_message). If the user has to do something themselves \
 (record clips, sign in, make a choice), put it in needs_you: task (exactly what to do and where) and follow_up (what \
-an agent should do once they have, if anything). Save anything \
+an agent should do once they have, if anything). If the task produces a plan with \
+dates and times (a study plan, a schedule), also list each session in schedule: title, start and end as local times \
+\"YYYY-MM-DDTHH:MM\", and kind (study, deadline, test, recording or other). Engine adds them to the user's calendar. \
+Save anything \
 you make as files in the current folder. When you finish, return a summary of what you did and found (short, plain \
 text, \"- \" bullets, no markdown headings) and an open list of things the user should see now: website URLs, app \
 names, or paths of files you made. Leave open empty when nothing needs opening.";
 
-const SCHEMA: &str = r#"{"type":"object","properties":{"summary":{"type":"string"},"open":{"type":"array","items":{"type":"string"}},"proposed":{"type":"array","items":{"type":"object","properties":{"action":{"type":"string"},"details":{"type":"string"},"tool":{"type":"string"}},"required":["action","details"]}},"needs_you":{"type":"array","items":{"type":"object","properties":{"task":{"type":"string"},"follow_up":{"type":"string"}},"required":["task"]}}},"required":["summary","open"]}"#;
+const SCHEMA: &str = r#"{"type":"object","properties":{"summary":{"type":"string"},"open":{"type":"array","items":{"type":"string"}},"proposed":{"type":"array","items":{"type":"object","properties":{"action":{"type":"string"},"details":{"type":"string"},"tool":{"type":"string"}},"required":["action","details"]}},"needs_you":{"type":"array","items":{"type":"object","properties":{"task":{"type":"string"},"follow_up":{"type":"string"}},"required":["task"]}},"schedule":{"type":"array","items":{"type":"object","properties":{"title":{"type":"string"},"start":{"type":"string"},"end":{"type":"string"},"kind":{"type":"string","enum":["study","deadline","test","recording","other"]}},"required":["title","start","end","kind"]}}},"required":["summary","open"]}"#;
 
 /// Outward shell commands Engine knows about. Best effort: an arbitrary script could still reach the network.
 const DENIED: &str = "Bash(git push:*) Bash(gh:*) Bash(curl -X POST:*) PowerShell(git push:*) PowerShell(gh:*)";
@@ -139,6 +142,8 @@ pub struct Outcome {
     pub proposed: Vec<Proposal>,
     /// Things only the user can do: each becomes a needs-you card.
     pub needs_you: Vec<UserTask>,
+    /// Sessions of a plan the agent made: each becomes a block in the schedule.
+    pub schedule: Vec<crate::schedule::Block>,
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -283,7 +288,8 @@ pub fn outcome(event: &Value) -> Result<Outcome, String> {
     let list = |key: &str| out.get(key).cloned().unwrap_or(Value::Array(vec![]));
     let proposed = serde_json::from_value(list("proposed")).unwrap_or_default();
     let needs_you = serde_json::from_value(list("needs_you")).unwrap_or_default();
-    Ok(Outcome { summary, open, proposed, needs_you })
+    let schedule = serde_json::from_value(list("schedule")).unwrap_or_default();
+    Ok(Outcome { summary, open, proposed, needs_you, schedule })
 }
 
 /// What the agent is doing, from one stream event: the orb to show and a short label.
@@ -372,7 +378,13 @@ mod tests {
     #[test]
     fn reads_outcomes() {
         let done = json!({"type": "result", "is_error": false, "structured_output": {"summary": " Did it. ", "open": ["https://a.com"]}});
-        let expect = Outcome { summary: "Did it.".into(), open: vec!["https://a.com".into()], proposed: vec![], needs_you: vec![] };
+        let expect = Outcome {
+            summary: "Did it.".into(),
+            open: vec!["https://a.com".into()],
+            proposed: vec![],
+            needs_you: vec![],
+            schedule: vec![],
+        };
         assert_eq!(outcome(&done), Ok(expect));
         let cards = json!({"type": "result", "is_error": false, "structured_output": {"summary": "s", "open": [],
             "proposed": [{"action": "Send reply", "details": "To: Sam", "tool": "mcp__g__send_message"}],
@@ -380,6 +392,9 @@ mod tests {
         let out = outcome(&cards).unwrap();
         assert_eq!(out.proposed[0].tool, "mcp__g__send_message");
         assert_eq!(out.needs_you[0], UserTask { task: "Record 3 clips".into(), follow_up: String::new() });
+        let plan = json!({"type": "result", "is_error": false, "structured_output": {"summary": "s", "open": [],
+            "schedule": [{"title": "Faraday", "start": "2026-11-17T16:00", "end": "2026-11-17T17:00", "kind": "study"}]}});
+        assert_eq!(outcome(&plan).unwrap().schedule[0].title, "Faraday");
         let failed = json!({"type": "result", "is_error": true, "result": "Not logged in"});
         assert_eq!(outcome(&failed), Err("Not logged in".into()));
     }

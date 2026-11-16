@@ -57,6 +57,14 @@ exactly what would happen (recipient and full text for an email, for example):
 When something needs you personally (record some clips, choose a platform), it appears as a task. If an agent should
 carry on afterwards, the card says what it will do, and **Done** starts it.
 
+### Schedule
+
+The Schedule view has a week grid and an agenda of the next 30 days. When an answer or an agent produces a plan with
+times (a study plan, say), its sessions land here as blocks, and today's blocks show at the top of the Briefing.
+If you've set a notes folder, the plan is also written to `<vault>/Engine/` as a Markdown note, so it shows in
+Obsidian. Engine never overwrites a note there: a second plan with the same name gets a number. Drag a block to move
+it (it snaps to 15 minutes), click it to edit or delete it, or use **Add block**.
+
 ### Settings
 
 - **Projects:** name a folder ("my app"), and dumps that mention it run there.
