@@ -22,6 +22,32 @@
     if (agents.length > 1) return { kind: "work", text: `${agents.length} agents working` };
     return null;
   });
+  // Answers that finish while Engine is open type themselves out, like a terminal printing.
+  let typed = $state<Record<number, number>>({});
+  let seen = new Map<number, string>();
+  $effect(() => {
+    for (const i of engine.items) {
+      const before = seen.get(i.id);
+      if (before && before !== "done" && i.status === "done" && i.result && (i.kind === "answer" || i.kind === "job")) {
+        typed[i.id] = 0;
+      }
+      seen.set(i.id, i.status);
+    }
+  });
+  $effect(() => {
+    if (!Object.keys(typed).length) return;
+    const t = setInterval(() => {
+      const next: Record<number, number> = {};
+      for (const [id, n] of Object.entries(typed)) {
+        const full = engine.items.find((i) => i.id === Number(id))?.result.length ?? 0;
+        if (n + 18 < full) next[Number(id)] = n + 18; // about 1,000 characters a second
+      }
+      typed = next;
+    }, 18);
+    return () => clearInterval(t);
+  });
+  const shown = (i: Item) => (i.id in typed ? i.result.slice(0, typed[i.id]) : i.result);
+
   const hudKind = $derived(hud?.kind ?? ""); // the timer restarts only when the kind of work changes
   $effect(() => {
     if (!hudKind) return;
@@ -191,7 +217,7 @@
 <svelte:window onkeydown={onWindowKey} onclick={onWindowClick} />
 
 {#snippet reply(i: Item)}
-  {@const all = lines(i.result)}
+  {@const all = lines(shown(i))}
   {@const open = expanded.includes(i.id)}
   <div class="reply">
     {#each open ? all : all.slice(0, LONG) as l, n (n)}

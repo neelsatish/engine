@@ -17,6 +17,7 @@
     folder: string;
     recent: string[];
     local_ai: boolean;
+    theme?: string;
   };
   type VoiceStatus = { python: boolean; whisper: boolean; chatterbox: boolean; kokoro: boolean; own_env: boolean };
   type Connection = { name: string; kind: string; status: string };
@@ -201,6 +202,13 @@
       <div class="row">
         <div class="label-col"><span class="name">Start with Windows</span><span class="desc">Hidden in the tray at sign-in</span></div>
         {@render toggle(autostart, "Start with Windows", () => setAutostart(!autostart))}
+      </div>
+      <div class="row">
+        <div class="label-col"><span class="name">Theme</span><span class="desc">Also on the top bar</span></div>
+        <select class="input" aria-label="Theme" value={settings.theme === "mono" ? "mono" : "velvet"} onchange={(e) => save({ ...settings, theme: e.currentTarget.value })}>
+          <option value="velvet">Velvet · purple</option>
+          <option value="mono">Black and white</option>
+        </select>
       </div>
       <div class="row">
         <div class="label-col"><span class="name">Shortcuts</span><span class="desc">Names for sites and folders</span></div>

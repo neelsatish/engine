@@ -18,6 +18,8 @@ pub struct Settings {
     pub recent: Vec<String>,
     /// Local AI power: Engine's own thinking runs on the local model (Qwen3 through Ollama) instead of Haiku.
     pub local_ai: bool,
+    /// The look: "" or "velvet" for the purple Velvet Fold colours, "mono" for black and white.
+    pub theme: String,
 }
 
 pub const MODELS: [&str; 4] = ["haiku", "sonnet", "opus", "fable"];
@@ -182,6 +184,7 @@ mod tests {
             knowledge: vec!["C:\\Notes".into(), " c:\\notes ".into(), "".into()],
             voice: Voice { model: "huge".into(), ..Voice::default() },
             local_ai: true,
+            theme: String::new(),
             models: Models { agent: "opus".into(), answer: "gpt".into(), ..Models::default() },
             folder: "C:\\work".into(),
             recent: vec!["C:\\old".into(), "c:\\WORK".into()],

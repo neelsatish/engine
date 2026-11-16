@@ -16,7 +16,7 @@
   import Settings from "$lib/Settings.svelte";
   import StageHome from "$lib/StageHome.svelte";
   import Wordmark from "$lib/Wordmark.svelte";
-  import { engine, needsYou, running, startListeners, type View } from "$lib/state.svelte";
+  import { engine, needsYou, running, savePrefs, startListeners, type View } from "$lib/state.svelte";
 
   // The views, like workspaces in a tiling desktop: Alt+1..4 switches between them.
   const VIEWS: { id: View; label: string }[] = [
@@ -34,6 +34,12 @@
   const asks = $derived(needsYou().length);
   const agents = $derived(running().length);
   const v = $derived((engine.prefs?.voice ?? {}) as Record<string, unknown>);
+
+  // The theme is an attribute on <html>, so app.css can swap the whole palette.
+  const mono = $derived(engine.prefs?.theme === "mono");
+  $effect(() => {
+    document.documentElement.dataset.theme = mono ? "mono" : "velvet";
+  });
 
   const clock = () =>
     new Date().toLocaleString(undefined, { weekday: "long", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
@@ -129,6 +135,12 @@
       <span class="ind" class:on={engine.voice === "listening"} title="Microphone">
         {engine.voice === "listening" ? "● rec" : v.wake === false ? "mic" : "wake"}
       </span>
+      <button
+        class="ind"
+        title="Theme: {mono ? 'black and white' : 'velvet'} (click to switch)"
+        aria-label="Switch theme"
+        onclick={() => savePrefs({ theme: mono ? "velvet" : "mono" })}>{mono ? "b&w" : "velvet"}</button
+      >
       <span class="ind" class:on={engine.prefs?.local_ai} title="Where Engine thinks">{engine.prefs?.local_ai ? "local" : "cloud"}</span>
       {#if update}
         <button class="ind update" onclick={installUpdate} disabled={updating} title="Restart Engine on version {update.version}">

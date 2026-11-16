@@ -11,6 +11,8 @@ pub mod store;
 pub mod sysload;
 pub mod voice;
 pub mod wake;
+pub mod screen;
+pub mod winctl;
 
 use launcher::{Match, Target};
 use router::Kind;
@@ -46,6 +48,8 @@ struct Engine {
     speaking: Mutex<Option<std::process::Child>>,
     /// Acting while the person talks: how many samples have already been acted on, and the loop doing it.
     live: Mutex<Live>,
+    /// The last app or site opened, so "close it" and "minimize that" know what "it" is.
+    last_opened: Mutex<Option<Target>>,
     load: sysload::Monitor,
 }
 
@@ -112,6 +116,9 @@ fn log_err<T>(r: rusqlite::Result<T>) -> Option<T> {
 /// Opens `t` and records the outcome as an instant item in today's briefing.
 fn launch(engine: &Engine, dump: Option<i64>, title: &str, t: &Target) -> Result<(), String> {
     let result = launcher::launch(&t.target).map_err(|e| format!("Couldn't open {}: {e}", t.name));
+    if result.is_ok() && !t.target.starts_with("http") {
+        *engine.last_opened.lock().unwrap() = Some(t.clone());
+    }
     let (status, text) = match &result {
         Ok(()) => ("done", format!("Opened {}", t.name)),
         Err(e) => ("failed", e.clone()),
@@ -216,9 +223,52 @@ fn handle_dump(app: &AppHandle, text: &str) -> Reply {
     }
     // "Close X" first: "close the open file" mustn't reach the open fast path below.
     if let Some(query) = launcher::parse_close(text) {
-        if let Some(t) = resolve_one(&engine, &query, &aliases) {
+        if let Some(t) = it(&engine, &query).or_else(|| resolve_one(&engine, &query, &aliases)) {
             return close_reply(app, Some(dump), &t);
         }
+    }
+    // "What's on my screen?": a screenshot (with Engine out of the way) for an agent to look at.
+    if screen::asks_about_screen(text) {
+        let shot = engine.work_dir.join("screens").join(format!("screen-{dump}.png"));
+        let window = app.get_webview_window("main").filter(|w| w.is_visible().unwrap_or(false));
+        if let Some(w) = &window {
+            let _ = w.hide();
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        let taken = screen::capture(&shot);
+        if let Some(w) = &window {
+            let _ = w.show();
+        }
+        if let Err(e) = taken {
+            return Reply::Error { message: e };
+        }
+        let prompt = format!(
+            "The person asked: \"{text}\"\n\nA screenshot of their screen, taken just now, is at {}. Read that image \
+             first, then answer them directly and briefly in your summary. Look only; don't change anything.",
+            shot.display()
+        );
+        log_err(engine.store().add_job(Some(dump), "Look at my screen", &prompt, "", "", ""));
+        pump(app);
+        changed(app);
+        return Reply::Routed { count: 1 };
+    }
+    // Window control: "switch to Discord", "snap Chrome left", "minimize everything".
+    if let Some(request) = winctl::parse(text) {
+        let shown = match &request {
+            winctl::Request::One(_, q) => it(&engine, q).or_else(|| resolve_one(&engine, q, &aliases)).map(|t| t.name).unwrap_or_else(|| q.clone()),
+            winctl::Request::MinimizeAll => String::new(),
+        };
+        let request = match request {
+            winctl::Request::One(a, _) => winctl::Request::One(a, shown.clone()),
+            all => all,
+        };
+        let (status, said) = match winctl::act(&request, &shown) {
+            Ok(m) => ("done", m),
+            Err(e) => ("failed", e),
+        };
+        log_err(engine.store().add_item(Some(dump), "instant", &said, "", status, &said));
+        changed(app);
+        return if status == "done" { Reply::Opened { name: said } } else { Reply::Error { message: said } };
     }
     // Fastest path: media, volume, YouTube, Spotify, web search, lock. No model.
     if let Some(q) = quick::parse(text) {
@@ -324,6 +374,14 @@ fn asked_to_open(said: &str, target: &str) -> bool {
         .iter()
         .any(|v| s.contains(v))
         || (name.len() >= 3 && squash(&s).contains(&name))
+}
+
+/// "It", "that", "this": the app opened last.
+fn it(engine: &Engine, query: &str) -> Option<Target> {
+    ["it", "that", "this", "that app", "this app", "that one"]
+        .contains(&query.trim())
+        .then(|| engine.last_opened.lock().unwrap().clone())
+        .flatten()
 }
 
 /// One app or shortcut for `query`, the way "open X" picks it.
@@ -844,6 +902,7 @@ fn start_listening(app: &AppHandle) -> Result<(), String> {
     *rec = Some(voice::record()?);
     drop(rec);
     stop_speech(&engine); // talking to Engine cuts off whatever it was saying
+    voice::beep(&engine.work_dir.join("voice")); // so you know it's listening without looking
     voice_event(app, "listening", "");
     warm_voice(app);
     let live = engine.settings().voice.live;
@@ -936,7 +995,7 @@ fn worth_acting(text: &str) -> bool {
 /// Whether a phrase is something Engine does instantly with no model: a quick command, "stop everything", or
 /// opening one exact app or shortcut. Those run the moment they're heard.
 fn instant_command(engine: &Engine, text: &str) -> bool {
-    if quick::parse(text).is_some() || quick::stop_all(text) || quick::hush(text) {
+    if quick::parse(text).is_some() || quick::stop_all(text) || quick::hush(text) || winctl::parse(text).is_some() {
         return true;
     }
     let aliases = engine.aliases().unwrap_or_default();
@@ -1517,6 +1576,7 @@ pub fn run() {
                 helper: Mutex::default(),
                 speaking: Mutex::default(),
                 live: Mutex::default(),
+                last_opened: Mutex::default(),
                 load: sysload::Monitor::new(),
             });
 

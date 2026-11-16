@@ -333,6 +333,36 @@ pub fn play(wav: &Path) {
     PLAYING.store(false, Ordering::Relaxed);
 }
 
+/// A short soft beep that says "listening", written once next to Engine's other voice files and played without
+/// waiting.
+pub fn beep(dir: &Path) {
+    let path = dir.join("listening.wav");
+    if !path.is_file() {
+        // 90 ms of two quick rising tones, faded in and out so it never clicks.
+        let rate = 24_000u32;
+        let n = rate as usize * 9 / 100;
+        let samples: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / rate as f32;
+                let f = if i < n / 2 { 880.0 } else { 1320.0 };
+                let edge = (i.min(n - i) as f32 / (rate as f32 * 0.008)).min(1.0);
+                (2.0 * std::f32::consts::PI * f * t).sin() * 0.18 * edge
+            })
+            .collect();
+        if write_wav(&path, &samples, rate).is_err() {
+            return;
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_FILENAME, SND_NODEFAULT};
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        // SAFETY: a NUL-terminated path; with SND_ASYNC Windows copies what it needs before returning.
+        unsafe { PlaySoundW(wide.as_ptr(), std::ptr::null_mut(), SND_FILENAME | SND_NODEFAULT | SND_ASYNC) };
+    }
+}
+
 /// Stops whatever `play` is playing, e.g. when the person starts talking.
 #[cfg(windows)]
 pub fn hush() {

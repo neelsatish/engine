@@ -32,6 +32,7 @@ export type Prefs = {
   recent: string[];
   models: { agent: string; answer: string; effort?: string; advisor?: string };
   local_ai: boolean;
+  theme?: string;
   voice: { live: boolean; auto_submit: boolean; speak_on_summon: boolean } & Record<string, unknown>;
 } & Record<string, unknown>;
 
