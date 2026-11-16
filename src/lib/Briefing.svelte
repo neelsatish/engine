@@ -243,27 +243,11 @@
     submit();
   }}
 >
-  <div class="dump-head">
-    <label class="label" for="dump">Dump</label>
-    <span class="head-actions">
-    <button class="link speak" onclick={reviewDay} title="A short look back at today and ahead to tomorrow">
-      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"
-        ><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9" /></svg
-      >
-      Review my day
-    </button>
-    <button class="link speak" onclick={readAloud} title="Read the briefing aloud">
-      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"
-        ><path d="M11 5 6 9H3v6h3l5 4z" /><path d="M15.5 8.5a5 5 0 0 1 0 7" /><path d="M18.5 5.5a9 9 0 0 1 0 13" /></svg
-      >
-      Read aloud
-    </button>
-    </span>
-  </div>
   <div class="field glass">
     <div class="top">
     <textarea
       id="dump"
+      aria-label="Dump"
       bind:this={input}
       bind:value={text}
       onkeydown={onInputKey}
@@ -318,6 +302,14 @@
         </label>
       </div>
       <div class="chips-right">
+        <button type="button" class="icon-tool" aria-label="Review my day" title="Review my day" onclick={reviewDay}>
+          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9" /></svg>
+        </button>
+        <button type="button" class="icon-tool" aria-label="Read the briefing aloud" title="Read the briefing aloud" onclick={readAloud}>
+          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"
+            ><path d="M11 5 6 9H3v6h3l5 4z" /><path d="M15.5 8.5a5 5 0 0 1 0 7" /><path d="M18.5 5.5a9 9 0 0 1 0 13" /></svg
+          >
+        </button>
     <button
       class="mic"
       class:on={voice === "listening"}
@@ -628,34 +620,33 @@
     color: var(--text-muted);
   }
 
-  .dump-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
+
+
+
+
+
+
+  .icon-tool {
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    flex-shrink: 0;
+    border: 0;
+    border-radius: 9px;
+    background: transparent;
+    color: var(--text-muted);
+    transition: background var(--ease), color var(--ease);
   }
 
-  .dump-head .label {
-    margin: 0;
+  .icon-tool:hover {
+    background: var(--surface-2);
+    color: var(--text);
   }
 
-  .head-actions {
-    display: flex;
-    gap: 2px;
-  }
-
-  .speak {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-  }
-
-  .speak svg {
-    width: 15px;
-    height: 15px;
-  }
-
-  .dump-head {
-    margin-bottom: var(--space-xs);
+  .icon-tool svg {
+    width: 17px;
+    height: 17px;
   }
 
   .mic {

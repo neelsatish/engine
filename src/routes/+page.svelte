@@ -109,6 +109,12 @@
         </button>
       {/each}
     </nav>
+    {#if update}
+      <button class="update-pill" onclick={installUpdate} disabled={updating} title="Restart Engine on version {update.version}">
+        {#if updating}<Orb process="updating" size={14} />{/if}
+        {updating ? "Updating…" : `Update to ${update.version}`}
+      </button>
+    {/if}
     <button class="icon" aria-label="Hide Engine" title="Hide (Esc)" onclick={() => getCurrentWindow().hide()}>
       <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14" /></svg>
     </button>
@@ -133,21 +139,12 @@
     </div>
   {/if}
 
-  <footer>
-    {#if note}
-      <span class="note" role="alert">{note}</span>
-    {:else}
-      <span><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>Space</kbd> summon · <kbd>Esc</kbd> hide</span>
-    {/if}
-    <span class="actions">
-      {#if update}
-        <button class="link update" onclick={installUpdate} disabled={updating}>
-          {#if updating}<Orb process="updating" size={14} />{/if}
-          {updating ? "Updating…" : `Restart to update to ${update.version}`}
-        </button>
-      {/if}
-    </span>
-  </footer>
+  {#if note}
+    <div class="toast glass" role="alert">
+      <span>{note}</span>
+      <button class="link" onclick={() => (note = "")}>Dismiss</button>
+    </div>
+  {/if}
 </main>
 
 <style>
@@ -246,15 +243,43 @@
     color: var(--text);
   }
 
-  footer {
+
+  .update-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 28px;
+    padding: 0 12px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--accent-gradient);
+    color: var(--on-accent);
+    font-size: 12px;
+    font-weight: 650;
+    white-space: nowrap;
+  }
+
+  .update-pill:hover:not(:disabled) {
+    filter: brightness(1.08);
+  }
+
+  .toast {
+    position: absolute;
+    right: var(--space-lg);
+    bottom: var(--space-md);
+    left: var(--space-lg);
+    z-index: 20;
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: var(--space-md);
-    padding-top: var(--space-md);
-    border-top: 1px solid var(--border);
-    color: var(--text-muted);
-    font-size: 12px;
+    gap: var(--space-sm);
+    padding: var(--space-sm) var(--space-md);
+    border-color: rgb(240 113 138 / 0.5);
+    font-size: 13px;
+    user-select: text;
+  }
+
+  .toast span {
+    flex: 1;
   }
 
   .confirm {
@@ -271,24 +296,6 @@
     flex: 1;
   }
 
-  .note {
-    overflow: hidden;
-    color: var(--danger);
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    user-select: text;
-  }
 
-  .actions {
-    display: flex;
-    gap: var(--space-xs);
-  }
 
-  .update {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    color: var(--accent);
-    font-weight: 600;
-  }
 </style>

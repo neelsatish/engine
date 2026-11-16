@@ -1,10 +1,10 @@
 <script lang="ts">
-  // Settings: projects (named folders agents work in), notes folders agents can read, and starting with Windows.
+  // Settings as a compact two-pane menu: sections on the left, the chosen section on the right.
   import { getVersion } from "@tauri-apps/api/app";
   import { invoke } from "@tauri-apps/api/core";
+  import { listen } from "@tauri-apps/api/event";
   import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
   import { open } from "@tauri-apps/plugin-dialog";
-  import { listen } from "@tauri-apps/api/event";
   import { onMount } from "svelte";
 
   type Project = { name: string; folder: string; runner: string };
@@ -18,9 +18,28 @@
     recent: string[];
   };
   type VoiceStatus = { python: boolean; whisper: boolean; chatterbox: boolean; own_env: boolean };
+  type Connection = { name: string; kind: string; status: string };
+  type Section = "general" | "models" | "voice" | "projects" | "notes" | "connections";
 
   let { onEditAliases }: { onEditAliases: () => void } = $props();
 
+  // Each icon is a path list for a 24-unit stroke icon.
+  const SECTIONS: { id: Section; label: string; icon: string[] }[] = [
+    { id: "general", label: "General", icon: ["M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z", "M19 12a7 7 0 0 0-.1-1.2l2-1.6-2-3.4-2.4 1a7 7 0 0 0-2-1.2L14 3h-4l-.5 2.6a7 7 0 0 0-2 1.2l-2.4-1-2 3.4 2 1.6a7 7 0 0 0 0 2.4l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 2 1.2L10 21h4l.5-2.6a7 7 0 0 0 2-1.2l2.4 1 2-3.4-2-1.6c.1-.4.1-.8.1-1.2z"] },
+    { id: "models", label: "Models", icon: ["M12 3l1.8 4.6L18 9l-4.2 1.4L12 15l-1.8-4.6L6 9l4.2-1.4z", "M19 15l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"] },
+    { id: "voice", label: "Voice", icon: ["M9 3h6v11H9z", "M5 11a7 7 0 0 0 14 0", "M12 18v3"] },
+    { id: "projects", label: "Projects", icon: ["M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"] },
+    { id: "notes", label: "Notes", icon: ["M6 3h9l4 4v14H6z", "M14 3v5h5", "M9 13h7", "M9 17h5"] },
+    { id: "connections", label: "Connections", icon: ["M9 15l6-6", "M11 6l1-1a4 4 0 0 1 6 6l-1 1", "M13 18l-1 1a4 4 0 0 1-6-6l1-1"] },
+  ];
+  const MODELS = [
+    ["haiku", "Haiku · fastest"],
+    ["sonnet", "Sonnet · balanced"],
+    ["opus", "Opus · most capable"],
+    ["fable", "Fable · newest"],
+  ];
+
+  let section = $state<Section>("general");
   let settings = $state<Settings>({
     projects: [],
     knowledge: [],
@@ -29,27 +48,9 @@
     folder: "",
     recent: [],
   });
-  const MODEL_OPTIONS = [
-    ["haiku", "Haiku (fastest)"],
-    ["sonnet", "Sonnet (balanced)"],
-    ["opus", "Opus (most capable)"],
-    ["fable", "Fable (newest)"],
-  ];
   let status = $state<VoiceStatus | null>(null);
-  type Connection = { name: string; kind: string; status: string };
   let conns = $state<Connection[] | null>(null);
   let connError = $state("");
-
-  async function loadConnections() {
-    conns = null;
-    connError = "";
-    try {
-      conns = await invoke<Connection[]>("connections");
-    } catch (e) {
-      connError = String(e);
-      conns = [];
-    }
-  }
   let installing = $state(false);
   let installLine = $state("");
   let newName = $state("");
@@ -66,6 +67,9 @@
       note = String(e);
     }
   }
+
+  const setVoice = (patch: Partial<Voice>) => save({ ...settings, voice: { ...settings.voice, ...patch } });
+  const setModels = (patch: Partial<Settings["models"]>) => save({ ...settings, models: { ...settings.models, ...patch } });
 
   async function chooseFolder(title: string): Promise<string | null> {
     const picked = await open({ directory: true, title });
@@ -86,10 +90,11 @@
     if (folder) await save({ ...settings, knowledge: [...settings.knowledge, folder] });
   }
 
-  const setVoice = (patch: Partial<Voice>) => save({ ...settings, voice: { ...settings.voice, ...patch } });
-
   async function chooseClip() {
-    const picked = await open({ title: "Choose a voice clip (about 10 seconds)", filters: [{ name: "Audio", extensions: ["wav", "mp3", "flac"] }] });
+    const picked = await open({
+      title: "Choose a voice clip (about 10 seconds)",
+      filters: [{ name: "Audio", extensions: ["wav", "mp3", "flac"] }],
+    });
     if (typeof picked === "string") await setVoice({ clip: picked });
   }
 
@@ -116,19 +121,30 @@
     }
   }
 
-  onMount(async () => {
+  async function loadConnections() {
+    conns = null;
+    connError = "";
     try {
-      settings = await invoke<Settings>("get_settings");
+      conns = await invoke<Connection[]>("connections");
     } catch (e) {
-      note = String(e);
+      connError = String(e);
+      conns = [];
     }
-    autostart = await isEnabled().catch(() => false);
-    version = await getVersion();
-    status = await invoke<VoiceStatus>("voice_status").catch(() => null);
-    loadConnections();
-  });
+  }
+
+  function show(id: Section) {
+    section = id;
+    // Checking connections runs `claude mcp list`, so only do it when that section is opened.
+    if (id === "connections" && conns === null && !connError) loadConnections();
+    if (id === "voice" && !status) invoke<VoiceStatus>("voice_status").then((s) => (status = s)).catch(() => {});
+  }
+
+  const base = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() ?? p;
 
   onMount(() => {
+    invoke<Settings>("get_settings").then((s) => (settings = s), (e) => (note = String(e)));
+    isEnabled().then((on) => (autostart = on), () => {});
+    getVersion().then((v) => (version = v));
     const offs = [
       listen<string>("voice-install", (e) => (installLine = e.payload)),
       listen<Settings>("settings", (e) => (settings = e.payload)),
@@ -137,281 +153,318 @@
   });
 </script>
 
-<div class="scroll">
-  {#if note}<p class="error" role="alert">{note}</p>{/if}
+{#snippet toggle(on: boolean, label: string, flip: () => void)}
+  <button class="switch" role="switch" aria-checked={on} aria-label={label} onclick={flip}><span></span></button>
+{/snippet}
 
-  <section class="card glass">
-    <h2>Projects <span class="count">{settings.projects.length}</span></h2>
-    <p class="hint">
-      Name a folder, and dumps that mention it run there: "keep going on my app" works in your app's folder. Claude
-      agents get your skills and connectors; Codex uses your ChatGPT sign-in and works offline in its sandbox.
-    </p>
-    {#if settings.projects.length}
-      <ul class="rows">
-        {#each settings.projects as p, i (p.name)}
-          <li>
-            <div class="body">
-              <span class="name">{p.name}</span>
-              <span class="path" title={p.folder}>{p.folder}</span>
-            </div>
-            <select
-              class="input"
-              aria-label="Who works on {p.name}"
-              value={p.runner}
-              onchange={(e) =>
-                save({ ...settings, projects: settings.projects.map((q, j) => (j === i ? { ...q, runner: e.currentTarget.value } : q)) })}
-            >
-              <option value="claude">Claude</option>
-              <option value="codex">Codex</option>
-            </select>
-            <button
-              class="link"
-              aria-label="Remove {p.name}"
-              onclick={() => save({ ...settings, projects: settings.projects.filter((_, j) => j !== i) })}>Remove</button
-            >
-          </li>
-        {/each}
-      </ul>
-    {/if}
-    <form
-      class="add"
-      onsubmit={(e) => {
-        e.preventDefault();
-        addProject();
-      }}
-    >
-      <label class="sr" for="project-name">Project name</label>
-      <input id="project-name" class="input" bind:value={newName} placeholder="Project name, e.g. my app" />
-      <select class="input" bind:value={newRunner} aria-label="Who works on it">
-        <option value="claude">Claude</option>
-        <option value="codex">Codex</option>
-      </select>
-      <button class="button" type="submit" disabled={!newName.trim()}>Choose folder…</button>
-    </form>
-  </section>
+<div class="settings">
+  <nav class="side" aria-label="Settings sections">
+    {#each SECTIONS as s (s.id)}
+      <button class="side-item" aria-current={section === s.id ? "page" : undefined} onclick={() => show(s.id)}>
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true">{#each s.icon as d (d)}<path {d} />{/each}</svg>
+        {s.label}
+      </button>
+    {/each}
+    <span class="version">Engine {version}</span>
+  </nav>
 
-  <section class="card glass">
-    <h2>Notes <span class="count">{settings.knowledge.length}</span></h2>
-    <p class="hint">Folders agents can read when a task mentions your notes, subjects or documents. Put your Obsidian vault first.</p>
-    {#if settings.knowledge.length}
-      <ul class="rows">
-        {#each settings.knowledge as k, i (k)}
-          <li>
-            <div class="body">
-              {#if i === 0}<span class="name">Obsidian vault</span>{/if}
-              <span class="path" title={k}>{k}</span>
-            </div>
-            <button
-              class="link"
-              aria-label="Remove {k}"
-              onclick={() => save({ ...settings, knowledge: settings.knowledge.filter((_, j) => j !== i) })}>Remove</button
-            >
-          </li>
-        {/each}
-      </ul>
-    {/if}
-    <div class="add"><button class="button" onclick={addNotes}>Add folder…</button></div>
-  </section>
+  <section class="pane glass" aria-label={SECTIONS.find((s) => s.id === section)?.label}>
+    {#if note}<p class="error" role="alert">{note}</p>{/if}
 
-  <section class="card glass">
-    <h2>Connections {#if conns}<span class="count">{conns.length}</span>{/if}</h2>
-    <p class="hint">
-      What Claude agents can use: your claude.ai connectors (email, files, notes) and MCP servers. "Check my email" or
-      "find the deck in my Drive" just work. Anything outward, like sending, still waits for your approval.
-    </p>
-    {#if conns === null}
-      <p class="hint">Checking your connections…</p>
-    {:else}
-      <ul class="rows">
-        {#each conns as c (c.kind + c.name)}
-          <li>
-            <span class="conn-dot {c.status.replace(' ', '-')}" aria-hidden="true"></span>
-            <div class="body">
-              <span class="name">{c.name}</span>
-              <span class="path">{c.kind === "connector" ? "claude.ai connector" : c.kind === "plugin" ? "Plugin" : "Local MCP server"} · {c.status}</span>
-            </div>
-          </li>
-        {:else}
-          <li><span class="path">{connError || "No connections found."}</span></li>
-        {/each}
-      </ul>
-    {/if}
-    <p class="hint">
-      YouTube and Spotify: say "play lofi on Spotify" or "play cooking videos on YouTube" and Engine opens them, and
-      "pause", "next song" or "volume 30" control whatever is playing. For more, add a connector for them on claude.ai
-      when one is available.
-    </p>
-    <div class="add">
-      <button class="button" onclick={() => invoke("manage_connectors")}>Add connectors on claude.ai</button>
-      <button class="button" onclick={loadConnections} disabled={conns === null}>Check again</button>
-    </div>
-  </section>
-
-  <section class="card glass">
-    <h2>Models</h2>
-    <p class="hint">Which Claude model does the work, on your Claude plan. Sorting your dumps always uses Haiku, so it stays quick.</p>
-    <ul class="rows">
-      <li>
-        <div class="body">
-          <span class="name">Agents</span>
-          <span class="path">Background jobs. Also in the dump box, next to the folder.</span>
-        </div>
-        <select class="input" aria-label="Agent model" value={settings.models.agent}
-          onchange={(e) => save({ ...settings, models: { ...settings.models, agent: e.currentTarget.value } })}>
-          {#each MODEL_OPTIONS as [id, name] (id)}<option value={id}>{name}</option>{/each}
+    {#if section === "general"}
+      <div class="row">
+        <div class="label-col"><span class="name">Start with Windows</span><span class="desc">Hidden in the tray at sign-in</span></div>
+        {@render toggle(autostart, "Start with Windows", () => setAutostart(!autostart))}
+      </div>
+      <div class="row">
+        <div class="label-col"><span class="name">Shortcuts</span><span class="desc">Names for sites and folders</span></div>
+        <button class="button" onclick={onEditAliases}>Edit</button>
+      </div>
+      <div class="row">
+        <div class="label-col"><span class="name">Hotkeys</span><span class="desc">Show or hide · hold to talk</span></div>
+        <span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>Space</kbd> · <kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>Space</kbd></span>
+      </div>
+    {:else if section === "models"}
+      <div class="row">
+        <div class="label-col"><span class="name">Agents</span><span class="desc">Background jobs</span></div>
+        <select class="input" aria-label="Agent model" value={settings.models.agent} onchange={(e) => setModels({ agent: e.currentTarget.value })}>
+          {#each MODELS as [id, name] (id)}<option value={id}>{name}</option>{/each}
         </select>
-      </li>
-      <li>
-        <div class="body">
-          <span class="name">Answers</span>
-          <span class="path">Quick answers, plans and the end-of-day review.</span>
-        </div>
-        <select class="input" aria-label="Answer model" value={settings.models.answer}
-          onchange={(e) => save({ ...settings, models: { ...settings.models, answer: e.currentTarget.value } })}>
-          {#each MODEL_OPTIONS as [id, name] (id)}<option value={id}>{name}</option>{/each}
+      </div>
+      <div class="row">
+        <div class="label-col"><span class="name">Answers</span><span class="desc">Quick answers, plans, reviews</span></div>
+        <select class="input" aria-label="Answer model" value={settings.models.answer} onchange={(e) => setModels({ answer: e.currentTarget.value })}>
+          {#each MODELS as [id, name] (id)}<option value={id}>{name}</option>{/each}
         </select>
-      </li>
-    </ul>
-  </section>
-
-  <section class="card glass">
-    <h2>Voice</h2>
-    <p class="hint">
-      Hold <kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>Space</kbd> anywhere and speak, or click the mic in the dump box. Speech is
-      turned into text on this PC with Whisper.
-    </p>
-    <ul class="rows">
-      <li>
-        <div class="body">
+      </div>
+    {:else if section === "voice"}
+      <div class="row">
+        <div class="label-col">
           <span class="name">Speech recognition</span>
-          <span class="path">
-            {#if !status}Checking…
-            {:else if status.whisper}Ready.
-            {:else if status.python}Needs faster-whisper: install the voice pack below, or run pip install faster-whisper.
-            {:else}Needs Python, or the voice pack below.{/if}
-          </span>
+          <span class="desc">{!status ? "Checking…" : status.whisper ? "Ready, on this PC" : "Needs the voice pack below"}</span>
         </div>
         <select class="input" aria-label="Whisper model" value={settings.voice.model} onchange={(e) => setVoice({ model: e.currentTarget.value })}>
-          <option value="small">Small (fast)</option>
-          <option value="base.en">Base, English (fastest)</option>
-          <option value="large-v3-turbo">Large v3 turbo (best, 1.6 GB download)</option>
+          <option value="small">Small · fast</option>
+          <option value="base.en">Base · English, fastest</option>
+          <option value="large-v3-turbo">Large turbo · best</option>
         </select>
-      </li>
-      <li>
-        <div class="body">
-          <span class="name">Send what I say straight away</span>
-          <span class="path">Otherwise it waits in the dump box so you can check it.</span>
-        </div>
-        <button class="switch" role="switch" aria-checked={settings.voice.auto_submit} aria-label="Send what I say straight away"
-          onclick={() => setVoice({ auto_submit: !settings.voice.auto_submit })}><span></span></button>
-      </li>
-      <li>
-        <div class="body">
-          <span class="name">Read the briefing when I open Engine</span>
-          <span class="path">Or use Read aloud on the Briefing whenever you like.</span>
-        </div>
-        <button class="switch" role="switch" aria-checked={settings.voice.speak_on_summon} aria-label="Read the briefing when I open Engine"
-          onclick={() => setVoice({ speak_on_summon: !settings.voice.speak_on_summon })}><span></span></button>
-      </li>
-      <li>
-        <div class="body">
+      </div>
+      <div class="row">
+        <div class="label-col"><span class="name">Send what I say</span><span class="desc">Skip checking it first</span></div>
+        {@render toggle(settings.voice.auto_submit, "Send what I say", () => setVoice({ auto_submit: !settings.voice.auto_submit }))}
+      </div>
+      <div class="row">
+        <div class="label-col"><span class="name">Read briefing on open</span><span class="desc">When you summon Engine</span></div>
+        {@render toggle(settings.voice.speak_on_summon, "Read briefing on open", () => setVoice({ speak_on_summon: !settings.voice.speak_on_summon }))}
+      </div>
+      <div class="row">
+        <div class="label-col">
           <span class="name">Engine's voice</span>
-          <span class="path">
-            {settings.voice.engine === "chatterbox"
-              ? "Chatterbox clones the clip below. Use only a voice you own or have permission to use."
-              : "Windows' built-in voice."}
-          </span>
+          <span class="desc">{settings.voice.engine === "chatterbox" ? "Only clone a voice you may use" : "Windows' built-in voice"}</span>
         </div>
         <select class="input" aria-label="Engine's voice" value={settings.voice.engine} onchange={(e) => setVoice({ engine: e.currentTarget.value })}>
-          <option value="windows">Windows voice</option>
-          <option value="chatterbox" disabled={!status?.chatterbox}>Chatterbox (cloned)</option>
+          <option value="windows">Windows</option>
+          <option value="chatterbox" disabled={!status?.chatterbox}>Chatterbox · cloned</option>
         </select>
-      </li>
+      </div>
       {#if settings.voice.engine === "chatterbox"}
-        <li>
-          <div class="body">
-            <span class="name">Voice clip</span>
-            <span class="path" title={settings.voice.clip}>{settings.voice.clip || "No clip yet: Chatterbox uses its default voice."}</span>
-          </div>
-          <button class="button" onclick={chooseClip}>Choose clip…</button>
-        </li>
+        <div class="row">
+          <div class="label-col"><span class="name">Voice clip</span><span class="desc" title={settings.voice.clip}>{settings.voice.clip ? base(settings.voice.clip) : "Default voice"}</span></div>
+          <button class="button" onclick={chooseClip}>Choose</button>
+        </div>
       {/if}
-      <li>
-        <div class="body">
+      <div class="row">
+        <div class="label-col">
           <span class="name">Voice pack</span>
-          <span class="path" title={installLine}>
-            {#if installing || installLine}{installLine}
-            {:else if status?.own_env}Installed: Chatterbox and Whisper in Engine's own Python.
-            {:else}Chatterbox for a cloned voice, plus Whisper. About 3 GB, in its own Python, so your other Python stays as it is.{/if}
-          </span>
+          <span class="desc" title={installLine}>{installing || installLine ? installLine : status?.own_env ? "Installed" : "Chatterbox + Whisper · about 3 GB"}</span>
         </div>
         <button class="button" onclick={installVoice} disabled={installing || status?.own_env}>
           {installing ? "Installing…" : status?.own_env ? "Installed" : "Install"}
         </button>
-      </li>
-    </ul>
-  </section>
-
-  <section class="card glass">
-    <h2>General</h2>
-    <ul class="rows">
-      <li>
-        <div class="body">
-          <span class="name">Start with Windows</span>
-          <span class="path">Engine starts hidden in the tray when you sign in.</span>
+      </div>
+    {:else if section === "projects"}
+      {#each settings.projects as p, i (p.name)}
+        <div class="row">
+          <div class="label-col"><span class="name">{p.name}</span><span class="desc" title={p.folder}>{p.folder}</span></div>
+          <select
+            class="input small"
+            aria-label="Who works on {p.name}"
+            value={p.runner}
+            onchange={(e) => save({ ...settings, projects: settings.projects.map((q, j) => (j === i ? { ...q, runner: e.currentTarget.value } : q)) })}
+          >
+            <option value="claude">Claude</option>
+            <option value="codex">Codex</option>
+          </select>
+          <button class="icon-btn" aria-label="Remove {p.name}" title="Remove" onclick={() => save({ ...settings, projects: settings.projects.filter((_, j) => j !== i) })}>
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
+          </button>
         </div>
-        <button
-          class="switch"
-          role="switch"
-          aria-checked={autostart}
-          aria-label="Start with Windows"
-          onclick={() => setAutostart(!autostart)}><span></span></button
-        >
-      </li>
-      <li>
-        <div class="body">
-          <span class="name">Shortcuts</span>
-          <span class="path">Names for sites and folders, like gmail or school.</span>
+      {:else}
+        <p class="empty">Name a folder, and dumps that mention it run there.</p>
+      {/each}
+      <form class="add" onsubmit={(e) => { e.preventDefault(); addProject(); }}>
+        <input class="input grow" bind:value={newName} placeholder="New project, e.g. my app" aria-label="Project name" />
+        <select class="input small" bind:value={newRunner} aria-label="Who works on it">
+          <option value="claude">Claude</option>
+          <option value="codex">Codex</option>
+        </select>
+        <button class="button primary" type="submit" disabled={!newName.trim()}>Add</button>
+      </form>
+    {:else if section === "notes"}
+      {#each settings.knowledge as k, i (k)}
+        <div class="row">
+          <div class="label-col"><span class="name">{i === 0 ? "Obsidian vault" : base(k)}</span><span class="desc" title={k}>{k}</span></div>
+          <button class="icon-btn" aria-label="Remove {k}" title="Remove" onclick={() => save({ ...settings, knowledge: settings.knowledge.filter((_, j) => j !== i) })}>
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
+          </button>
         </div>
-        <button class="button" onclick={onEditAliases}>Edit aliases</button>
-      </li>
-      <li>
-        <div class="body">
-          <span class="name">Version</span>
-          <span class="path">Engine {version}. Updates install from GitHub when you click Restart to update.</span>
-        </div>
-      </li>
-    </ul>
+      {:else}
+        <p class="empty">Folders agents may read. Add your Obsidian vault first.</p>
+      {/each}
+      <div class="add"><button class="button primary" onclick={addNotes}>Add folder</button></div>
+    {:else}
+      {#if conns === null}
+        <p class="empty">Checking…</p>
+      {:else}
+        {#each conns as c (c.kind + c.name)}
+          <div class="row">
+            <span class="conn-dot {c.status.replace(' ', '-')}" aria-hidden="true"></span>
+            <div class="label-col">
+              <span class="name">{c.name}</span>
+              <span class="desc">{c.kind === "connector" ? "Connector" : c.kind === "plugin" ? "Plugin" : "Local"} · {c.status}</span>
+            </div>
+          </div>
+        {:else}
+          <p class="empty">{connError || "No connections found."}</p>
+        {/each}
+      {/if}
+      <div class="add">
+        <button class="button primary" onclick={() => invoke("manage_connectors")}>Add on claude.ai</button>
+        <button class="button" onclick={loadConnections} disabled={conns === null}>Refresh</button>
+      </div>
+    {/if}
   </section>
 </div>
 
 <style>
-  .scroll {
-    padding-top: var(--space-sm);
+  .settings {
+    display: grid;
+    flex: 1;
+    grid-template-columns: 150px 1fr;
+    gap: var(--space-md);
+    min-height: 0;
+    padding: var(--space-xs) 0 var(--space-md);
   }
 
-  .body {
+  .side {
     display: flex;
     flex-direction: column;
+    gap: 2px;
+    padding: 6px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--glass);
+    backdrop-filter: blur(14px);
+  }
+
+  .side-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border: 0;
+    border-radius: 9px;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 13px;
+    text-align: left;
+    transition: background var(--ease), color var(--ease);
+  }
+
+  .side-item svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  .side-item:hover {
+    color: var(--text);
+  }
+
+  .side-item[aria-current="page"] {
+    background: var(--surface-2);
+    color: var(--text);
+  }
+
+  .side-item[aria-current="page"] svg {
+    color: var(--accent);
+  }
+
+  .version {
+    margin-top: auto;
+    padding: 0 10px;
+    color: var(--text-muted);
+    font-size: 11px;
+  }
+
+  .pane {
+    min-height: 0;
+    overflow-y: auto;
+    padding: 6px var(--space-md);
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+
+  .row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    min-height: 52px;
+    padding: 8px 0;
+    border-bottom: 1px solid rgb(42 37 64 / 0.6);
+  }
+
+  .row:last-of-type {
+    border-bottom: 0;
+  }
+
+  .label-col {
+    display: flex;
     flex: 1;
+    flex-direction: column;
     min-width: 0;
   }
 
   .name {
     color: var(--text);
+    font-size: 14px;
   }
 
-  .path {
+  .desc {
     overflow: hidden;
     color: var(--text-muted);
-    font-size: 13px;
+    font-size: 12px;
     text-overflow: ellipsis;
     white-space: nowrap;
     user-select: text;
   }
 
-  .rows > li {
-    align-items: center;
+  select.input {
+    flex-shrink: 0;
+    width: 190px;
+    font-size: 13px;
+  }
+
+  select.input.small {
+    width: 96px;
+  }
+
+  .keys {
+    color: var(--text-muted);
+    font-size: 12px;
+  }
+
+  .keys kbd {
+    margin: 0 1px;
+  }
+
+  .add {
+    display: flex;
+    gap: var(--space-sm);
+    padding: 12px 0 8px;
+  }
+
+  .grow {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .empty {
+    margin: 0;
+    padding: 14px 0 4px;
+    color: var(--text-muted);
+    font-size: 13px;
+  }
+
+  .icon-btn {
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    flex-shrink: 0;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text-muted);
+  }
+
+  .icon-btn svg {
+    width: 15px;
+    height: 15px;
+  }
+
+  .icon-btn:hover {
+    background: var(--surface-2);
+    color: var(--danger);
   }
 
   .conn-dot {
@@ -431,23 +484,8 @@
     background: #f2b85c;
   }
 
-  select.input {
-    flex-shrink: 0;
-    max-width: 220px;
-  }
-
-  .add {
-    display: flex;
-    gap: var(--space-sm);
-    padding: 10px 0 14px;
-  }
-
-  .add .input {
-    flex: 1;
-  }
-
   .error {
-    margin: 0 0 var(--space-sm);
+    margin: 8px 0;
     padding: var(--space-sm) var(--space-md);
     border: 1px solid rgb(240 113 138 / 0.5);
     border-radius: 9px;
@@ -455,14 +493,6 @@
     color: var(--text);
     font-size: 13px;
     user-select: text;
-  }
-
-  .sr {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
   }
 
   .switch {
