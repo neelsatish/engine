@@ -29,7 +29,7 @@ tauri-plugin-dialog = "2"
 tauri-plugin-autostart = "2"
 cpal = "0.18.2"
 hound = "3.5.1"
-windows-sys = { version = "0.59", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_System_Shutdown", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_Foundation"] }
+windows-sys = { version = "0.59", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_System_Shutdown", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_Foundation", "Win32_Media_Audio"] }
 tauri-plugin-notification = "2"
 tauri-plugin-clipboard-manager = "2"
 ureq = { version = "2", features = ["json"] }

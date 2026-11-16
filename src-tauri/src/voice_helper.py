@@ -48,8 +48,8 @@ def whisper(name):
 
 def segments(path, name):
     """Timed pieces of speech, so Engine can act on each finished phrase while the person is still talking."""
-    # Split at half-second pauses (the default waits two seconds), so each phrase can run as soon as it's said.
-    vad = {"min_silence_duration_ms": 500, "speech_pad_ms": 200}
+    # Split at short pauses (the default waits two seconds), so each phrase can run as soon as it's said.
+    vad = {"min_silence_duration_ms": 350, "speech_pad_ms": 150}
     found, _ = whisper(name).transcribe(path, beam_size=1, vad_filter=True, vad_parameters=vad)
     return [{"start": s.start, "end": s.end, "text": s.text.strip()} for s in found if s.text.strip()]
 
@@ -83,15 +83,48 @@ def save_wav(path, samples, rate):
         w.writeframes(pcm.tobytes())
 
 
-def speak(text, clip, out):
-    global tts
-    import torch
-    from chatterbox.tts import ChatterboxTTS
+british = None
+KOKORO = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files/"
+KOKORO_FILES = ("kokoro-v0_19.onnx", "voices.json")
 
-    if tts is None:
-        tts = ChatterboxTTS.from_pretrained(device="cuda" if torch.cuda.is_available() else "cpu")
-    wav = tts.generate(text, audio_prompt_path=clip or None)
-    save_wav(out, wav.squeeze().detach().cpu().numpy(), tts.sr)
+
+def kokoro():
+    """Kokoro, a small fast voice model with British voices. Its files (~350 MB) download next to this script once."""
+    global british
+    if british is None:
+        import urllib.request
+        from kokoro_onnx import Kokoro
+
+        folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "kokoro")
+        os.makedirs(folder, exist_ok=True)
+        for name in KOKORO_FILES:
+            path = os.path.join(folder, name)
+            if not os.path.exists(path):
+                urllib.request.urlretrieve(KOKORO + name, path + ".part")
+                os.replace(path + ".part", path)
+        british = Kokoro(*(os.path.join(folder, n) for n in KOKORO_FILES))
+        british.create("Ready.", voice="bm_george", lang="en-gb")  # the first run is slow: spend it now
+    return british
+
+
+def say(text, out):
+    """Writes `text` in a British voice (Kokoro's George) to `out`."""
+    samples, rate = kokoro().create(text, voice="bm_george", speed=1.05, lang="en-gb")
+    save_wav(out, samples, rate)
+
+
+def speak(text, clip, out, engine="chatterbox"):
+    global tts
+    if engine == "kokoro":
+        say(text, out)
+    else:
+        import torch
+        from chatterbox.tts import ChatterboxTTS
+
+        if tts is None:
+            tts = ChatterboxTTS.from_pretrained(device="cuda" if torch.cuda.is_available() else "cpu")
+        wav = tts.generate(text, audio_prompt_path=clip or None)
+        save_wav(out, wav.squeeze().detach().cpu().numpy(), tts.sr)
     import winsound
 
     winsound.PlaySound(out, winsound.SND_FILENAME)
@@ -104,14 +137,17 @@ def handle(req):
     if cmd == "segments":
         return {"segments": segments(req["path"], req.get("model") or "large-v3-turbo")}
     if cmd == "speak":
-        speak(req["text"], req.get("clip", ""), req["out"])
+        speak(req["text"], req.get("clip", ""), req["out"], req.get("engine", "chatterbox"))
+        return {"ok": True}
+    if cmd == "say":  # write speech to a file without playing it (Engine caches short replies like "Yes sir?")
+        say(req["text"], req["out"])
         return {"ok": True}
     if cmd == "warm":
         whisper(req.get("model") or "large-v3-turbo")
         return {"ok": True}
     if cmd == "check":
         found = lambda m: importlib.util.find_spec(m) is not None
-        return {"whisper": found("faster_whisper"), "chatterbox": found("chatterbox")}
+        return {"whisper": found("faster_whisper"), "chatterbox": found("chatterbox"), "kokoro": found("kokoro_onnx")}
     return {"error": f"Unknown voice command: {cmd}"}
 
 

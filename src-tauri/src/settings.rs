@@ -47,13 +47,13 @@ impl Default for Models {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(default)]
 pub struct Voice {
-    /// The Whisper model for speech to text: "small" (fast), "base.en" or "large-v3-turbo" (best, larger download).
+    /// The Whisper model for speech to text: "base.en" (fastest), "small.en", "small" or "large-v3-turbo" (most accurate).
     pub model: String,
     /// Send what was heard straight away instead of leaving it in the dump box to check.
     pub auto_submit: bool,
     /// Read the briefing aloud each time Engine is summoned.
     pub speak_on_summon: bool,
-    /// "windows" (built-in voice) or "chatterbox" (the user's cloned voice).
+    /// "windows" (built-in voice), "kokoro" (a British voice) or "chatterbox" (the user's cloned voice).
     pub engine: String,
     /// The reference clip Chatterbox clones, about 10 seconds of a voice the user owns or may use.
     pub clip: String,
@@ -61,18 +61,24 @@ pub struct Voice {
     pub hold_key: bool,
     /// Act on each finished phrase while the person is still talking, instead of waiting for them to stop.
     pub live: bool,
+    /// Listen for "Engine" with the microphone always open; Engine answers "Yes sir?" and acts on what follows.
+    pub wake: bool,
+    /// Say a word as agents move between steps ("Writing", "Sending", "Almost done") and an overview when done.
+    pub narrate: bool,
 }
 
 impl Default for Voice {
     fn default() -> Self {
         Self {
-            model: "large-v3-turbo".into(),
+            model: "small.en".into(),
             auto_submit: false,
             speak_on_summon: false,
             engine: "windows".into(),
             clip: String::new(),
             hold_key: true,
             live: true,
+            wake: true,
+            narrate: true,
         }
     }
 }

@@ -98,18 +98,30 @@ it (it snaps to 15 minutes), click it to edit or delete it, or use **Add block**
 keep going, and bigger requests start in parallel. Letting go of the key handles the last phrase, so there's no
 send. Turn this off in Settings → Voice to get the words in the dump box instead.
 
-Hold the key under Esc (`` ` ``) anywhere and speak; a quick tap still types the character, and with Shift, Ctrl,
-Alt or Win held it passes straight through. `Ctrl+Alt+Space` and the mic button in the dump box work too. Engine records your default microphone,
+**Say "Engine".** With the wake word on (Settings → Voice), Engine keeps the microphone open and answers "Yes sir?"
+in a British voice, then acts on what you say next. "Engine, open Spotify" acts at once. Each burst of speech is
+transcribed on this PC and forgotten unless it starts with "Engine"; nothing is recorded or sent anywhere.
+
+**Engine talks you through it.** While an agent works you hear a word at each step ("On it", "Writing", "Sending",
+"Almost done"), and when a task or answer is done Engine reads a short overview. Talking to Engine cuts it off.
+Turn it off with "Talk me through tasks".
+
+Hold the key under Esc (`` ` ``) anywhere and speak, with or without Shift; a quick tap still types the character,
+and with Ctrl, Alt or Win held it passes straight through. Engine comes up so you can see it listening.
+`Ctrl+Alt+Space` and the mic button in the dump box work too. "Open Claude" or "open ChatGPT" opens the installed
+app when there is one, and the website otherwise. Engine records your default microphone,
 turns it into text on this PC with Whisper (faster-whisper), and puts the words in the dump box for you to check, or
 sends them straight away if you turn that on. Recordings are deleted as soon as they're transcribed. **Read aloud**
 speaks a short summary of the briefing, and Settings can make Engine do that whenever you open it.
 
 Speech recognition uses Engine's own voice Python when it's installed (otherwise `python` on your PATH with
-`faster-whisper`), and the Whisper model you pick: Large v3 turbo by default, on the GPU when PyTorch's CUDA build is
-installed (Engine borrows its cuBLAS and cuDNN). The model stays loaded while you use voice and is unloaded after 5 idle minutes. Engine speaks with
-Windows' built-in voice by default. The **voice pack** in Settings (about 3 GB, started by you) installs Chatterbox and
-Whisper into Engine's own Python 3.11 with `uv`, after which Engine can speak in a voice cloned from a short clip.
-Only clone a voice you own or have permission to use.
+`faster-whisper`), and the Whisper model you pick: Small English by default (about 0.2 s a pass on a laptop GPU;
+Base is quicker, Large v3 turbo most accurate), on the GPU when PyTorch's CUDA build is installed (Engine borrows its
+cuBLAS and cuDNN). The model stays loaded while you use voice (always, with the wake word on) and is otherwise
+unloaded after 15 idle minutes. The **voice pack** in Settings (about 3 GB, started by you) installs Whisper,
+Kokoro (the British voice, whose model downloads on first use) and Chatterbox into Engine's own Python 3.11 with
+`uv`. Engine can then speak in the British voice, or in a voice cloned from a short clip with Chatterbox. Only clone a
+voice you own or have permission to use. Without it, Engine speaks with Windows' built-in voice.
 
 ### Settings
 

@@ -107,6 +107,16 @@ impl Recording {
         s.get(from..).map(<[f32]>::to_vec).unwrap_or_default()
     }
 
+    /// How many samples have been heard since recording started (or since the last `clear`).
+    pub fn len(&self) -> usize {
+        self.samples.lock().unwrap().len()
+    }
+
+    /// Forgets what's been heard, so an always-on listener stays small between phrases.
+    pub fn clear(&self) {
+        self.samples.lock().unwrap().clear();
+    }
+
     /// How loud the last tenth of a second was, 0 to 1, for the listening animation.
     pub fn level(&self) -> f32 {
         let s = self.samples.lock().unwrap();
@@ -131,7 +141,7 @@ impl Recording {
 }
 
 /// How long a pause must be before a phrase counts as finished.
-pub const PAUSE_SECONDS: f32 = 0.7;
+pub const PAUSE_SECONDS: f32 = 0.45;
 
 /// Which timed pieces of speech are finished, given how much audio there is so far. Every piece but the last is
 /// finished (Whisper splits at pauses); the last is finished once a pause follows it. Returns the finished texts
@@ -240,14 +250,15 @@ pub fn python(voice_env: &Path) -> PathBuf {
 
 /// Checks what voice pieces are available: faster-whisper (speech in) and Chatterbox (cloned voice out).
 pub fn status(python: &Path) -> Value {
-    let probe = "import importlib.util as u, json; print(json.dumps({m: bool(u.find_spec(m)) for m in ['faster_whisper', 'chatterbox']}))";
+    let probe = "import importlib.util as u, json; print(json.dumps({m: bool(u.find_spec(m)) for m in ['faster_whisper', 'chatterbox', 'kokoro_onnx']}))";
     let out = no_window(Command::new(python).args(["-c", probe])).output();
     match out {
         Ok(o) if o.status.success() => {
             let v: Value = serde_json::from_slice(&o.stdout).unwrap_or(json!({}));
-            json!({"python": true, "whisper": v["faster_whisper"] == true, "chatterbox": v["chatterbox"] == true})
+            json!({"python": true, "whisper": v["faster_whisper"] == true, "chatterbox": v["chatterbox"] == true,
+                   "kokoro": v["kokoro_onnx"] == true})
         }
-        _ => json!({"python": false, "whisper": false, "chatterbox": false}),
+        _ => json!({"python": false, "whisper": false, "chatterbox": false, "kokoro": false}),
     }
 }
 
@@ -272,8 +283,9 @@ pub fn install(voice_env: &Path, mut progress: impl FnMut(String)) -> Result<(),
     let env = voice_env.to_string_lossy().into_owned();
     run(&["venv", "--python", "3.11", &env])?;
     let py = voice_env.join("Scripts").join("python.exe").to_string_lossy().into_owned();
-    // setuptools under 81 keeps pkg_resources, which Chatterbox's watermarker still imports.
-    run(&["pip", "install", "--python", &py, "chatterbox-tts", "faster-whisper", "setuptools<81"])
+    // setuptools under 81 keeps pkg_resources, which Chatterbox's watermarker still imports. Kokoro (the British
+    // voice) stays on 0.3, the last release that works with the numpy Chatterbox needs.
+    run(&["pip", "install", "--python", &py, "chatterbox-tts", "faster-whisper", "setuptools<81", "kokoro-onnx==0.3.3"])
 }
 
 // ---------- speech out ----------
@@ -291,6 +303,35 @@ pub fn speak_windows(text: &str) -> Result<Child, String> {
     child.stdin.take().expect("stdin is piped").write_all(text.as_bytes()).map_err(|e| e.to_string())?;
     Ok(child)
 }
+
+/// Whether Engine is playing speech right now (so the wake word listener doesn't hear Engine itself).
+pub static PLAYING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Plays a WAV file and waits for it to finish. `hush` cuts it short from any thread.
+#[cfg(windows)]
+pub fn play(wav: &Path) {
+    use std::os::windows::ffi::OsStrExt;
+    use std::sync::atomic::Ordering;
+    use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_FILENAME, SND_NODEFAULT, SND_SYNC};
+    let wide: Vec<u16> = wav.as_os_str().encode_wide().chain(Some(0)).collect();
+    PLAYING.store(true, Ordering::Relaxed);
+    // SAFETY: a NUL-terminated path; PlaySoundW only reads it.
+    unsafe { PlaySoundW(wide.as_ptr(), std::ptr::null_mut(), SND_FILENAME | SND_NODEFAULT | SND_SYNC) };
+    PLAYING.store(false, Ordering::Relaxed);
+}
+
+/// Stops whatever `play` is playing, e.g. when the person starts talking.
+#[cfg(windows)]
+pub fn hush() {
+    // SAFETY: a null sound stops the one playing; nothing is read.
+    unsafe { windows_sys::Win32::Media::Audio::PlaySoundW(std::ptr::null(), std::ptr::null_mut(), 0) };
+}
+
+#[cfg(not(windows))]
+pub fn play(_: &Path) {}
+
+#[cfg(not(windows))]
+pub fn hush() {}
 
 /// A short spoken summary of the briefing: today's blocks, then running, needs-you and done items.
 pub fn briefing_text(items: &[Item], today: &[Block]) -> String {

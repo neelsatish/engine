@@ -303,6 +303,14 @@ decisions made along the way, by the user or as Claude's calls:
 - **Look:** the user's Velvet Fold palette, a purple V8 logo, Thinking Orbs for each kind of process, and a purple
   ASCII rain on the back layer that animates only while Engine is focused.
 - **Distribution:** a signed NSIS installer from a GitHub Actions release, and an in-app updater (Restart to update).
+- **Wake word (v0.10):** "Engine" is spotted by transcribing each loud burst from an always-open mic with the
+  user's Whisper model (an energy gate finds the bursts), not a dedicated wake-word engine, since none ships with
+  "Engine". It answers "Yes sir?" in Kokoro's British George voice (user's request), cached as a clip so it plays at
+  once. Kokoro stays on 0.3.3, the last release that runs with the numpy Chatterbox pins.
+- **Narration (v0.10, user's request):** a paced word at each agent step and a short spoken overview when a task or
+  answer finishes. Claude's calls: "thinking" is never said (it happens between every step), words are at least
+  5 seconds apart, and overviews are cut to about 200 characters.
+- **Opening things:** an installed app with the exact name beats a website alias (user's request).
 
 ## Calls made by Claude (correct any of these)
 

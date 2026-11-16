@@ -63,10 +63,17 @@ fn score(query: &str, name: &str) -> u8 {
     }
 }
 
-/// Finds what to open. An alias with the exact name wins; otherwise the best match, or the tied choices.
+/// Lowercase letters and digits only, so "Chat GPT" (as speech often comes out) names the ChatGPT app.
+fn squash(s: &str) -> String {
+    s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
+}
+
+/// Finds what to open. An exact name wins, an installed app before an alias, so "open Claude" opens the Claude
+/// app rather than its website; otherwise the best match, or the tied choices.
 pub fn resolve(query: &str, aliases: &[Target], apps: &[Target]) -> Match {
     let q = query.to_lowercase();
-    if let Some(a) = aliases.iter().find(|a| a.name.to_lowercase() == q) {
+    let exact = |t: &&Target| squash(&t.name) == squash(&q);
+    if let Some(a) = apps.iter().find(exact).or_else(|| aliases.iter().find(exact)) {
         return Match::One(a.clone());
     }
     let mut ranked: Vec<(u8, &Target)> = aliases
@@ -205,6 +212,15 @@ mod tests {
         assert_eq!(resolve("word", &aliases, &apps), Match::One(t("Microsoft Word")));
         assert_eq!(resolve("ord", &aliases, &apps), Match::Nothing);
         assert_eq!(resolve("opera gx browser", &aliases, &apps), Match::One(t("Opera GX Browser")));
+    }
+
+    #[test]
+    fn installed_apps_beat_website_aliases() {
+        let apps = [t("Claude"), t("ChatGPT")];
+        let aliases = [t("claude"), t("chatgpt"), t("gmail")];
+        assert_eq!(resolve("claude", &aliases, &apps), Match::One(t("Claude")));
+        assert_eq!(resolve("Chat GPT", &aliases, &apps), Match::One(t("ChatGPT")));
+        assert_eq!(resolve("gmail", &aliases, &apps), Match::One(t("gmail"))); // no app: the alias still works
     }
 
     #[test]

@@ -96,19 +96,20 @@ pub fn start_local() -> Result<(), String> {
             return Err("Ollama didn't start.".into());
         }
     }
-    if local_ready() { Ok(()) } else { Err(format!("Ollama is running but doesn't have {LOCAL_MODEL} yet.")) }
+    if local_ready() { Ok(()) } else { Err("Ollama is running, but Qwen3 8B hasn't finished downloading yet.".into()) }
 }
 
 /// Loads the model ahead of the first question, kept for 10 idle minutes.
 pub fn warm_local() {
-    let body = json!({"model": LOCAL_MODEL, "prompt": "", "keep_alive": "10m"});
+    let Some(model) = local_model() else { return };
+    let body = json!({"model": model, "prompt": "", "keep_alive": "10m"});
     let _ = ureq::post(&format!("{OLLAMA}/api/generate")).timeout(std::time::Duration::from_secs(120)).send_json(body);
 }
 
 /// Turns Local AI off: unloads the model from the GPU, then stops Ollama so it uses nothing.
 pub fn stop_local() {
-    if ollama_up() {
-        let body = json!({"model": LOCAL_MODEL, "keep_alive": 0});
+    if let Some(model) = local_model() {
+        let body = json!({"model": model, "keep_alive": 0});
         let _ = ureq::post(&format!("{OLLAMA}/api/generate")).timeout(std::time::Duration::from_secs(10)).send_json(body);
     }
     for image in ["ollama app.exe", "ollama.exe"] {
@@ -125,17 +126,35 @@ pub fn local_status() -> Value {
 
 /// Whether Ollama is running and has the local model.
 pub fn local_ready() -> bool {
-    let tags = ureq::get(&format!("{OLLAMA}/api/tags")).timeout(std::time::Duration::from_secs(2)).call();
-    tags.ok()
-        .and_then(|r| r.into_json::<Value>().ok())
-        .and_then(|v| v["models"].as_array().cloned())
-        .is_some_and(|models| models.iter().any(|m| m["name"].as_str().is_some_and(|n| n.starts_with("qwen3:8b"))))
+    local_model().is_some()
+}
+
+/// The name Ollama knows the local model by, if it has it.
+fn local_model() -> Option<String> {
+    let tags = ureq::get(&format!("{OLLAMA}/api/tags")).timeout(std::time::Duration::from_secs(2)).call().ok()?;
+    let names: Vec<String> = tags.into_json::<Value>().ok()?["models"]
+        .as_array()?
+        .iter()
+        .filter_map(|m| m["name"].as_str().map(str::to_string))
+        .collect();
+    pick_local(&names)
+}
+
+/// Prefers `qwen3:8b` from Ollama's library, else any Qwen3 8B build, such as the Hugging Face one
+/// (`hf.co/Qwen/Qwen3-8B-GGUF:Q4_K_M`).
+fn pick_local(names: &[String]) -> Option<String> {
+    names
+        .iter()
+        .find(|n| n.starts_with(LOCAL_MODEL))
+        .or_else(|| names.iter().find(|n| n.to_lowercase().contains("qwen3-8b")))
+        .cloned()
 }
 
 /// One reply from the local model. With `schema`, Ollama constrains the reply to it and it's parsed as JSON.
 pub fn ask_local(system: &str, prompt: &str, schema: Option<&str>) -> Result<Value, String> {
+    let model = local_model().ok_or("Qwen3 8B isn't in Ollama yet.")?;
     let mut body = json!({
-        "model": LOCAL_MODEL,
+        "model": model,
         "stream": false,
         "think": false,
         "options": {"temperature": 0.2},
@@ -234,6 +253,16 @@ mod tests {
         let schema = r#"{"type":"object","properties":{"kind":{"type":"string","enum":["answer","job"]}},"required":["kind"]}"#;
         let out = ask_local("Classify the request.", "What is 2 + 2?", Some(schema)).unwrap();
         assert!(matches!(out["kind"].as_str(), Some("answer" | "job")), "{out}");
+    }
+
+    #[test]
+    fn finds_the_local_model_by_any_name() {
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(pick_local(&names(&["llama3:8b", "qwen3:8b"])), Some("qwen3:8b".into()));
+        let hf = "hf.co/Qwen/Qwen3-8B-GGUF:Q4_K_M";
+        assert_eq!(pick_local(&names(&[hf])), Some(hf.into()));
+        assert_eq!(pick_local(&names(&[hf, "qwen3:8b"])), Some("qwen3:8b".into()));
+        assert_eq!(pick_local(&names(&["qwen3:4b"])), None);
     }
 
     #[test]

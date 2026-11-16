@@ -8,7 +8,7 @@
   import { onMount } from "svelte";
 
   type Project = { name: string; folder: string; runner: string };
-  type Voice = { model: string; auto_submit: boolean; speak_on_summon: boolean; engine: string; clip: string; hold_key: boolean; live: boolean };
+  type Voice = { model: string; auto_submit: boolean; speak_on_summon: boolean; engine: string; clip: string; hold_key: boolean; live: boolean; wake: boolean; narrate: boolean };
   type Settings = {
     projects: Project[];
     knowledge: string[];
@@ -18,7 +18,7 @@
     recent: string[];
     local_ai: boolean;
   };
-  type VoiceStatus = { python: boolean; whisper: boolean; chatterbox: boolean; own_env: boolean };
+  type VoiceStatus = { python: boolean; whisper: boolean; chatterbox: boolean; kokoro: boolean; own_env: boolean };
   type Connection = { name: string; kind: string; status: string };
   type Section = "general" | "models" | "voice" | "projects" | "notes" | "connections";
 
@@ -66,13 +66,14 @@
   let settings = $state<Settings>({
     projects: [],
     knowledge: [],
-    voice: { model: "large-v3-turbo", auto_submit: false, speak_on_summon: false, engine: "windows", clip: "", hold_key: true, live: true },
+    voice: { model: "small.en", auto_submit: false, speak_on_summon: false, engine: "windows", clip: "", hold_key: true, live: true, wake: true, narrate: true },
     models: { agent: "haiku", answer: "sonnet" },
     folder: "",
     recent: [],
     local_ai: false,
   });
   let status = $state<VoiceStatus | null>(null);
+  const packReady = $derived(!!status?.own_env && !!status?.kokoro);
   let conns = $state<Connection[] | null>(null);
   let connError = $state("");
   let installing = $state(false);
@@ -245,14 +246,19 @@
           <span class="desc">{!status ? "Checking…" : status.whisper ? "Ready, on this PC" : "Needs the voice pack below"}</span>
         </div>
         <select class="input" aria-label="Whisper model" value={settings.voice.model} onchange={(e) => setVoice({ model: e.currentTarget.value })}>
-          <option value="small">Small · fast</option>
           <option value="base.en">Base · English, fastest</option>
-          <option value="large-v3-turbo">Large turbo · best</option>
+          <option value="small.en">Small · English, fast</option>
+          <option value="small">Small · any language</option>
+          <option value="large-v3-turbo">Large turbo · most accurate</option>
         </select>
       </div>
       <div class="row">
         <div class="label-col"><span class="name">Hold <kbd>`</kbd> to talk</span><span class="desc">A quick tap still types it</span></div>
         {@render toggle(settings.voice.hold_key, "Hold the backtick key to talk", () => setVoice({ hold_key: !settings.voice.hold_key }))}
+      </div>
+      <div class="row">
+        <div class="label-col"><span class="name">Wake word</span><span class="desc">Say “Engine” and it answers. The mic stays open; audio never leaves this PC</span></div>
+        {@render toggle(settings.voice.wake, "Wake word", () => setVoice({ wake: !settings.voice.wake }))}
       </div>
       <div class="row">
         <div class="label-col"><span class="name">Act while I talk</span><span class="desc">Each phrase runs as soon as you pause</span></div>
@@ -263,15 +269,26 @@
         {@render toggle(settings.voice.auto_submit, "Send what I say", () => setVoice({ auto_submit: !settings.voice.auto_submit }))}
       </div>
       <div class="row">
+        <div class="label-col"><span class="name">Talk me through tasks</span><span class="desc">“Writing”, “Sending”, “Almost done”, then an overview</span></div>
+        {@render toggle(settings.voice.narrate, "Talk me through tasks", () => setVoice({ narrate: !settings.voice.narrate }))}
+      </div>
+      <div class="row">
         <div class="label-col"><span class="name">Read briefing on open</span><span class="desc">When you summon Engine</span></div>
         {@render toggle(settings.voice.speak_on_summon, "Read briefing on open", () => setVoice({ speak_on_summon: !settings.voice.speak_on_summon }))}
       </div>
       <div class="row">
         <div class="label-col">
           <span class="name">Engine's voice</span>
-          <span class="desc">{settings.voice.engine === "chatterbox" ? "Only clone a voice you may use" : "Windows' built-in voice"}</span>
+          <span class="desc">
+            {settings.voice.engine === "chatterbox"
+              ? "Only clone a voice you may use"
+              : settings.voice.engine === "kokoro"
+                ? "British, made on this PC"
+                : "Windows' built-in voice"}
+          </span>
         </div>
         <select class="input" aria-label="Engine's voice" value={settings.voice.engine} onchange={(e) => setVoice({ engine: e.currentTarget.value })}>
+          <option value="kokoro" disabled={!status?.kokoro}>British · Kokoro</option>
           <option value="windows">Windows</option>
           <option value="chatterbox" disabled={!status?.chatterbox}>Chatterbox · cloned</option>
         </select>
@@ -285,10 +302,12 @@
       <div class="row">
         <div class="label-col">
           <span class="name">Voice pack</span>
-          <span class="desc" title={installLine}>{installing || installLine ? installLine : status?.own_env ? "Installed" : "Chatterbox + Whisper · about 3 GB"}</span>
+          <span class="desc" title={installLine}>
+            {installing || installLine ? installLine : packReady ? "Installed" : "Whisper, Chatterbox and the British voice · about 3 GB"}
+          </span>
         </div>
-        <button class="button" onclick={installVoice} disabled={installing || status?.own_env}>
-          {installing ? "Installing…" : status?.own_env ? "Installed" : "Install voice pack"}
+        <button class="button" onclick={installVoice} disabled={installing || packReady}>
+          {installing ? "Installing…" : packReady ? "Installed" : status?.own_env ? "Update voice pack" : "Install voice pack"}
         </button>
       </div>
     {:else if section === "projects"}

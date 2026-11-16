@@ -1,6 +1,7 @@
 pub mod ai;
 pub mod jobs;
 pub mod launcher;
+pub mod narrate;
 pub mod ptt;
 pub mod quick;
 pub mod router;
@@ -9,6 +10,7 @@ pub mod settings;
 pub mod store;
 pub mod sysload;
 pub mod voice;
+pub mod wake;
 
 use launcher::{Match, Target};
 use router::Kind;
@@ -17,7 +19,7 @@ use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
-    sync::{Mutex, MutexGuard},
+    sync::{Mutex, MutexGuard, OnceLock},
 };
 use store::Store;
 use tauri::{
@@ -271,6 +273,7 @@ fn start(app: &AppHandle, engine: &Engine, dump: i64, aliases: &[Target], folder
                 let (status, result) = match reply {
                     Ok(out) => {
                         let (text, plan) = router::parse_answer(&out);
+                        tell(narrate::Line::Overview(narrate::overview(&text)));
                         let added = add_plan(&app, &title, &text, plan);
                         ("done", if added > 0 { format!("{text}\n\nAdded {added} blocks to your schedule.") } else { text })
                     }
@@ -329,10 +332,14 @@ fn run_job(app: &AppHandle, job: store::Job) {
     let marker = dir.join("approved.once");
     let approved = (!job.tool.is_empty()).then(|| (job.tool.as_str(), marker.as_path()));
     changed(app);
+    tell(narrate::Line::Word("On it"));
     let on_spawn = |pid| {
         engine.jobs.lock().unwrap().insert(id, pid);
     };
     let on_activity = |process: &'static str, label: String| {
+        if let Some(word) = narrate::word(process, &label) {
+            tell(narrate::Line::Word(word));
+        }
         log_err(engine.store().set_activity(id, process, &label));
         changed(app);
     };
@@ -363,13 +370,16 @@ fn run_job(app: &AppHandle, job: store::Job) {
             for t in &done.needs_you {
                 log_err(engine.store().add_held("task", dump, &t.task, &t.follow_up, "", &job.project, &job.folder));
             }
-            let added = add_plan(app, &job_title(&engine, id), &done.summary, done.schedule);
+            let title = job_title(&engine, id);
+            let added = add_plan(app, &title, &done.summary, done.schedule);
             let summary = if added > 0 { format!("{summary}\n\nAdded {added} blocks to your schedule.") } else { summary };
             log_err(engine.store().finish(id, "done", &summary));
+            tell(narrate::Line::Overview(format!("Done: {title}. {}", narrate::overview(&done.summary))));
             Some((summary, done.open))
         }
         Err(e) => {
             log_err(engine.store().finish(id, "failed", &e));
+            tell(narrate::Line::Overview(format!("{} didn't finish. It's in your briefing.", job_title(&engine, id))));
             None
         }
     };
@@ -645,6 +655,7 @@ fn start_listening(app: &AppHandle) -> Result<(), String> {
     }
     *rec = Some(voice::record()?);
     drop(rec);
+    stop_speech(&engine); // talking to Engine cuts off whatever it was saying
     voice_event(app, "listening", "");
     warm_voice(app);
     let live = engine.settings().voice.live;
@@ -672,14 +683,15 @@ fn listen_loop(app: &AppHandle, live: bool) {
             None => break,
         };
         let _ = app.emit("voice-level", level);
-        if !live || last_pass.elapsed() < std::time::Duration::from_millis(900) {
+        // A pass takes ~0.1-0.7 s on a GPU depending on the model; checking this often is what makes it feel instant.
+        if !live || last_pass.elapsed() < std::time::Duration::from_millis(350) {
             continue;
         }
         last_pass = std::time::Instant::now();
         let from = engine.live.lock().unwrap().done;
         let Some(audio) = engine.recording.lock().unwrap().as_ref().map(|r| r.since(from)) else { break };
-        if audio.len() < rate as usize {
-            continue; // under a second of new sound: nothing to act on yet
+        if audio.len() < rate as usize * 6 / 10 {
+            continue; // too little new sound to hold even "pause"
         }
         if voice::write_wav(&wav, &audio, rate).is_err() {
             continue;
@@ -698,9 +710,11 @@ fn listen_loop(app: &AppHandle, live: bool) {
 /// Shows what was heard and acts on it straight away, like a dump sent from the box.
 fn act_on(app: &AppHandle, text: &str) {
     let text = text.trim().to_string();
-    if text.is_empty() {
+    if !worth_acting(&text) {
+        ptt::log(&format!("ignored: {text}"));
         return;
     }
+    ptt::log(&format!("acting on: {text}"));
     let _ = app.emit("heard-part", &text);
     let app = app.clone();
     std::thread::spawn(move || {
@@ -708,6 +722,126 @@ fn act_on(app: &AppHandle, text: &str) {
             voice_event(&app, "error", &message);
         }
     });
+}
+
+/// Drops filler an open mic catches between commands ("Oh.", "Thank you.", stray numbers): a phrase of one or two
+/// words counts only when it's an instant command or "open X".
+fn worth_acting(text: &str) -> bool {
+    let words = text.split_whitespace().filter(|w| w.chars().any(char::is_alphabetic)).count();
+    words > 2 || (words > 0 && (quick::parse(text).is_some() || launcher::parse_open(text).is_some()))
+}
+
+/// Brings Engine up so its logo visibly listens, even from the tray. No focus steal and no "summon" (which could
+/// read the briefing aloud over the person talking).
+fn reveal(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+    }
+}
+
+/// Whether Engine is busy with the microphone or speaking, so the wake word listener should ignore what it hears.
+fn voice_busy(engine: &Engine) -> bool {
+    let talking = engine.speaking.lock().unwrap().as_mut().is_some_and(|c| matches!(c.try_wait(), Ok(None)));
+    // The helper is held while it speaks in Kokoro or Chatterbox, or transcribes a push-to-talk recording.
+    talking
+        || voice::PLAYING.load(std::sync::atomic::Ordering::Relaxed)
+        || engine.recording.lock().unwrap().is_some()
+        || engine.helper.try_lock().is_err()
+}
+
+/// The wake word listener: while it's on, the microphone stays open and each burst of speech is transcribed.
+/// "Engine, open Spotify" acts at once; "Engine" alone answers "Yes sir?" and acts on the next thing said.
+fn wake_loop(app: &AppHandle) {
+    use std::time::{Duration, Instant};
+    const STEP_MS: u32 = 100;
+    let engine = app.state::<Engine>();
+    let wav = engine.work_dir.join("voice").join("wake.wav");
+    let mut mic: Option<voice::Recording> = None;
+    let mut gate = wake::Gate::default();
+    let mut follow: Option<Instant> = None; // after "Yes sir?": until when the next words count without "Engine"
+    let mut warmed = false;
+    loop {
+        std::thread::sleep(Duration::from_millis(STEP_MS as u64));
+        if !wake::ENABLED.load(std::sync::atomic::Ordering::Relaxed) {
+            mic = None; // closes the microphone
+            continue;
+        }
+        let Some(rec) = &mic else {
+            match voice::record() {
+                Ok(r) => (mic, gate) = (Some(r), wake::Gate::default()),
+                Err(e) => {
+                    ptt::log(&format!("wake: {e}"));
+                    std::thread::sleep(Duration::from_secs(30));
+                }
+            }
+            continue;
+        };
+        if !warmed {
+            // Make the reply clip (and load Whisper) off this thread, so listening starts straight away.
+            warmed = true;
+            let app = app.clone();
+            std::thread::spawn(move || {
+                let engine = app.state::<Engine>();
+                let model = engine.settings().voice.model;
+                let _ = engine.with_helper(|h| h.call(&serde_json::json!({"cmd": "warm", "model": model})));
+            });
+        }
+        if voice_busy(&engine) {
+            rec.clear();
+            gate.reset();
+            continue;
+        }
+        let following = follow.is_some_and(|t| Instant::now() < t || gate.in_speech());
+        if follow.is_some() && !following {
+            follow = None; // nothing more was said
+            voice_event(app, "idle", "");
+        }
+        let level = rec.level();
+        if following {
+            let _ = app.emit("voice-level", level);
+        }
+        let Some((from, to)) = gate.push(level, rec.len(), rec.rate, STEP_MS) else {
+            if !gate.in_speech() && rec.len() > rec.rate as usize * 10 {
+                rec.clear(); // keep memory flat between bursts
+            }
+            continue;
+        };
+        let audio: Vec<f32> = rec.since(from).into_iter().take(to - from).collect();
+        rec.clear();
+        gate.reset();
+        if following {
+            voice_event(app, "transcribing", "");
+        }
+        let model = engine.settings().voice.model;
+        let heard = voice::write_wav(&wav, &audio, rec.rate).and_then(|()| engine.with_helper(|h| h.transcribe(&wav, &model)));
+        let _ = fs::remove_file(&wav); // the words are used, the recording isn't kept
+        let heard = heard.unwrap_or_default();
+        if following {
+            follow = None;
+            voice_event(app, "idle", "");
+            act_on(app, &wake::command(&heard).unwrap_or(heard)); // "Engine" said again is fine too
+            continue;
+        }
+        let Some(rest) = wake::command(&heard) else { continue }; // talk not meant for Engine: forgotten
+        ptt::log(&format!("wake: heard {heard:?}"));
+        stop_speech(&engine); // talking to Engine cuts off whatever it was saying
+        reveal(app);
+        if worth_acting(&rest) {
+            act_on(app, &rest);
+            continue;
+        }
+        let clip = said_clip(&engine, "Yes sir?");
+        if clip.is_file() {
+            voice::play(&clip);
+        } else if let Ok(mut child) = voice::speak_windows("Yes sir?") {
+            let _ = child.wait(); // the British clip is still being made
+        }
+        rec.clear(); // don't hear our own reply
+        gate.reset();
+        follow = Some(Instant::now() + Duration::from_secs(6));
+        voice_event(app, "listening", "");
+    }
 }
 
 /// Stops the microphone and transcribes what was said. Empty when nothing was caught. When acting live, only the
@@ -747,7 +881,9 @@ fn stop_listening(app: &AppHandle) -> Result<String, String> {
 /// words go to the dump box (sent at once if auto-submit is on).
 fn heard(app: &AppHandle) {
     let voice = app.state::<Engine>().settings().voice;
-    match stop_listening(app) {
+    let result = stop_listening(app);
+    ptt::log(&format!("released: {:?}", result.as_ref().map(|t| t.chars().take(80).collect::<String>())));
+    match result {
         Ok(text) if !text.is_empty() && voice.live => act_on(app, &text),
         Ok(text) if !text.is_empty() => {
             show(app);
@@ -787,18 +923,110 @@ fn speak(app: &AppHandle, text: &str) -> Result<(), String> {
     let engine = app.state::<Engine>();
     stop_speech(&engine);
     let v = engine.settings().voice;
-    if v.engine == "chatterbox" {
-        let out = engine.work_dir.join("voice").join("spoken.wav");
-        let request = serde_json::json!({"cmd": "speak", "text": text, "clip": v.clip, "out": out});
-        return engine.with_helper(|h| h.call(&request)).map(|_| ());
+    let out = engine.work_dir.join("voice").join("spoken.wav");
+    match v.engine.as_str() {
+        // Kokoro only writes the audio; it's played here, so the helper is free and talking over it cuts it off.
+        "kokoro" => {
+            let request = serde_json::json!({"cmd": "say", "text": text, "out": out});
+            engine.with_helper(|h| h.call(&request))?;
+            voice::play(&out);
+        }
+        "chatterbox" => {
+            let request = serde_json::json!({"cmd": "speak", "text": text, "clip": v.clip, "out": out, "engine": "chatterbox"});
+            engine.with_helper(|h| h.call(&request))?;
+        }
+        _ => *engine.speaking.lock().unwrap() = Some(voice::speak_windows(text)?),
     }
-    *engine.speaking.lock().unwrap() = Some(voice::speak_windows(text)?);
     Ok(())
 }
 
 fn stop_speech(engine: &Engine) {
+    voice::hush();
     if let Some(mut child) = engine.speaking.lock().unwrap().take() {
         let _ = child.kill();
+    }
+}
+
+static NARRATOR: OnceLock<std::sync::mpsc::Sender<narrate::Line>> = OnceLock::new();
+
+/// Queues something for Engine to say while it works (when "Talk me through tasks" is on).
+fn tell(line: narrate::Line) {
+    if let Some(n) = NARRATOR.get() {
+        let _ = n.send(line);
+    }
+}
+
+/// Says queued progress words and overviews one at a time, never over the person talking.
+fn narrator(app: AppHandle, lines: std::sync::mpsc::Receiver<narrate::Line>) {
+    use narrate::Line;
+    use std::time::{Duration, Instant};
+    let engine = app.state::<Engine>();
+    let mut pacer = narrate::Pacer::default();
+    while let Ok(first) = lines.recv() {
+        let mut batch = vec![first];
+        batch.extend(lines.try_iter());
+        if !engine.settings().voice.narrate {
+            continue;
+        }
+        // Wait while the person is talking to Engine (up to a minute), then say what's still worth saying.
+        for _ in 0..300 {
+            if engine.recording.lock().unwrap().is_none() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        batch.extend(lines.try_iter());
+        let overviews: Vec<String> = batch.iter().filter_map(|l| if let Line::Overview(t) = l { Some(t.clone()) } else { None }).collect();
+        if overviews.is_empty() {
+            // Only the newest progress word still matters.
+            let word = batch.iter().rev().find_map(|l| if let Line::Word(w) = l { Some(*w) } else { None });
+            if let Some(w) = word.filter(|w| pacer.allow(w, Instant::now())) {
+                ptt::log(&format!("said: {w}"));
+                say_short(&engine, w);
+            }
+            continue;
+        }
+        for text in overviews {
+            ptt::log(&format!("said overview: {} chars", text.len()));
+            if let Err(e) = speak(&app, &text) {
+                eprintln!("narrator: {e}");
+            }
+            while engine.speaking.lock().unwrap().as_mut().is_some_and(|c| matches!(c.try_wait(), Ok(None))) {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            pacer.spoke(Instant::now());
+        }
+    }
+}
+
+/// Where a short phrase's cached recording lives ("Yes sir?" is voice/said/yes-sir.wav).
+fn said_clip(engine: &Engine, text: &str) -> PathBuf {
+    let name: String = text.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect::<Vec<_>>().join("-");
+    engine.work_dir.join("voice").join("said").join(format!("{name}.wav"))
+}
+
+/// A short phrase in the British voice, made once with Kokoro and kept so it plays at once. None without Kokoro.
+fn cached_clip(engine: &Engine, text: &str) -> Option<PathBuf> {
+    let clip = said_clip(engine, text);
+    if !clip.is_file() {
+        let _ = fs::create_dir_all(clip.parent()?);
+        let request = serde_json::json!({"cmd": "say", "text": text, "out": clip});
+        if let Err(e) = engine.with_helper(|h| h.call(&request)) {
+            ptt::log(&format!("voice: couldn't make {text:?}: {e}"));
+        }
+    }
+    clip.is_file().then_some(clip)
+}
+
+/// Says a short phrase: the cached British clip when there is one, otherwise Windows' voice. Waits until done.
+fn say_short(engine: &Engine, text: &str) {
+    match cached_clip(engine, text) {
+        Some(clip) => voice::play(&clip),
+        None => {
+            if let Ok(mut child) = voice::speak_windows(text) {
+                let _ = child.wait();
+            }
+        }
     }
 }
 
@@ -908,6 +1136,7 @@ fn get_settings(engine: State<Engine>) -> Result<settings::Settings, String> {
 fn save_settings(settings: settings::Settings, app: AppHandle) -> Result<settings::Settings, String> {
     let saved = settings.save(&app.state::<Engine>().settings_path)?;
     ptt::ENABLED.store(saved.voice.hold_key, std::sync::atomic::Ordering::Relaxed);
+    wake::ENABLED.store(saved.voice.wake, std::sync::atomic::Ordering::Relaxed);
     let _ = app.emit("settings", &saved); // keeps the dump box chips and the Settings view in step
     Ok(saved)
 }
@@ -1014,11 +1243,31 @@ pub fn run() {
             }
 
             // Hold ` to talk; a tap still types it.
+            let _ = fs::create_dir_all(app.state::<Engine>().work_dir.join("voice"));
+            ptt::log_to(app.state::<Engine>().work_dir.join("voice").join("ptt.log"));
             ptt::ENABLED.store(app.state::<Engine>().settings().voice.hold_key, std::sync::atomic::Ordering::Relaxed);
+            wake::ENABLED.store(app.state::<Engine>().settings().voice.wake, std::sync::atomic::Ordering::Relaxed);
+            let waker = app.handle().clone();
+            std::thread::spawn(move || wake_loop(&waker));
+            let (lines, queue) = std::sync::mpsc::channel();
+            let _ = NARRATOR.set(lines);
+            let speaker = app.handle().clone();
+            std::thread::spawn(move || {
+                // Record the short phrases first (once, about a second each), so none waits on Kokoro later.
+                let engine = speaker.state::<Engine>();
+                if engine.settings().voice.wake || engine.settings().voice.narrate {
+                    for phrase in narrate::PHRASES {
+                        cached_clip(&engine, phrase);
+                    }
+                }
+                narrator(speaker.clone(), queue)
+            });
             let (on_hold, on_release) = (app.handle().clone(), app.handle().clone());
             ptt::install(
-                move || {
-                    if let Err(e) = start_listening(&on_hold) {
+                move || match start_listening(&on_hold) {
+                    Ok(()) => reveal(&on_hold),
+                    Err(e) => {
+                        ptt::log(&format!("listen error: {e}"));
                         voice_event(&on_hold, "error", &e);
                     }
                 },
@@ -1047,7 +1296,9 @@ pub fn run() {
                 std::thread::sleep(std::time::Duration::from_secs(60));
                 let engine = reaper.state::<Engine>();
                 let mut helper = engine.helper.lock().unwrap();
-                if helper.as_ref().is_some_and(|h| h.last_used.elapsed() > voice::IDLE) {
+                // Listening for the wake word needs Whisper ready at any moment, so it stays loaded then.
+                let idle = helper.as_ref().is_some_and(|h| h.last_used.elapsed() > voice::IDLE);
+                if idle && !wake::ENABLED.load(std::sync::atomic::Ordering::Relaxed) {
                     *helper = None;
                 }
             });
@@ -1134,4 +1385,17 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Engine");
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn filler_is_not_acted_on() {
+        for filler in ["Oh.", "Thank you.", "talks.", "1 . 2 3 7 7 8", ""] {
+            assert!(!super::worth_acting(filler), "{filler:?} should be ignored");
+        }
+        for meant in ["Open Opera", "pause", "next song", "open google docs", "what's on my calendar today"] {
+            assert!(super::worth_acting(meant), "{meant:?} should be acted on");
+        }
+    }
 }
