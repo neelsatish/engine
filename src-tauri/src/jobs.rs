@@ -75,8 +75,12 @@ pub struct Tune {
 pub fn outward(tool: &str) -> bool {
     let Some((server, name)) = tool.strip_prefix("mcp__").and_then(|t| t.split_once("__")) else { return false };
     // Driving a real browser or the desktop can click Send on anything, so those tools need approval too.
-    if ["computer-use", "computer_use", "claude-in-chrome", "claude_in_chrome", "Claude_Browser"].contains(&server) {
-        return !matches!(name, "screenshot" | "read_page" | "get_page_text" | "find" | "tabs_context" | "tabs_context_mcp");
+    let driver = server.to_lowercase();
+    if ["computer", "chrome", "browser", "playwright", "puppeteer", "remote-devices", "remote_devices"].iter().any(|d| driver.contains(d)) {
+        return !matches!(
+            name,
+            "screenshot" | "read_page" | "get_page_text" | "find" | "tabs_context" | "tabs_context_mcp" | "browser_snapshot" | "browser_take_screenshot"
+        );
     }
     let name = name.to_lowercase();
     let words: Vec<&str> = name.split(['_', '-']).filter(|w| !w.is_empty()).collect();
@@ -628,6 +632,8 @@ mod tests {
             "mcp__nvidia-app__nvapp_client_set_laptop_feature",
             "mcp__computer-use__left_click",
             "mcp__claude-in-chrome__form_input",
+            "mcp__playwright__browser_click",
+            "mcp__remote-devices__computer_left_click",
             "mcp__claude_ai_Notion__notion-update-page",
         ];
         let allowed = [

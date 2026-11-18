@@ -17,7 +17,7 @@ pub fn tweak(s: &mut Settings, setting: &str, value: &str) -> Result<String, Str
             let v = v.trim_start_matches("codex:").trim_start_matches("claude ").replace(' ', "-");
             s.models.agent = if MODELS.contains(&v.as_str()) {
                 v
-            } else if let Some(m) = CODEX_MODELS.iter().find(|m| **m == v || m.ends_with(&v)) {
+            } else if let Some(m) = CODEX_MODELS.iter().find(|m| !v.is_empty() && (**m == v || m.ends_with(&format!("-{v}")))) {
                 format!("codex:{m}")
             } else {
                 return Err(format!("No model called “{value}”."));
@@ -75,6 +75,8 @@ mod tests {
         assert!(tweak(&mut s, "effort", "max").is_ok() && s.models.effort == "max");
         assert!(tweak(&mut s, "wake", "off").is_ok() && !s.voice.wake);
         assert!(tweak(&mut s, "model", "gpt-9").is_err());
+        assert!(tweak(&mut s, "model", "").is_err() && tweak(&mut s, "model", "a").is_err());
+        assert!(tweak(&mut s, "model", "astra").is_ok() && s.models.agent == "codex:gpt-6-astra");
         assert!(tweak(&mut s, "colour", "red").is_err());
     }
 }

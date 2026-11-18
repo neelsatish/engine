@@ -137,6 +137,17 @@ unsafe fn bring_forward(hwnd: windows_sys::Win32::Foundation::HWND) {
     }
 }
 
+/// Whether the app called `query` has a visible window right now.
+#[cfg(windows)]
+pub fn has_window(query: &str) -> bool {
+    find(query).is_some()
+}
+
+#[cfg(not(windows))]
+pub fn has_window(_: &str) -> bool {
+    false
+}
+
 /// The main visible window of the app called `query`, matched by process name, then window title.
 #[cfg(windows)]
 fn find(query: &str) -> Option<windows_sys::Win32::Foundation::HWND> {

@@ -248,8 +248,15 @@ fn handle_dump(app: &AppHandle, text: &str) -> Reply {
             return close_reply(app, Some(dump), &t);
         }
     }
-    // "What's on my screen?": a screenshot (with Engine out of the way) for an agent to look at.
-    if screen::asks_about_screen(text) {
+    // Media, volume, YouTube, Spotify, web search and lock come before the screen and window checks, so "lock my
+    // screen" locks rather than taking a screenshot.
+    if let Some(q) = quick::parse(text) {
+        return run_quick(app, Some(dump), q);
+    }
+    // "What's on my screen?": a screenshot (with Engine out of the way) for an agent to look at. Not when the
+    // person pasted the thing itself ("summarize this: …") or means their clipboard.
+    let pasted = text.contains(':') || text.contains('\n') || mentions_clipboard(text);
+    if screen::asks_about_screen(text) && !pasted {
         let shot = engine.work_dir.join("screens").join(format!("screen-{dump}.png"));
         let window = app.get_webview_window("main").filter(|w| w.is_visible().unwrap_or(false));
         if let Some(w) = &window {
@@ -273,8 +280,16 @@ fn handle_dump(app: &AppHandle, text: &str) -> Reply {
         changed(app);
         return Reply::Routed { count: 1 };
     }
-    // Window control: "switch to Discord", "snap Chrome left", "minimize everything".
-    if let Some(request) = winctl::parse(text) {
+    // Window control: "switch to Discord", "snap Chrome left", "minimize everything". Only when that app really
+    // has a window: "switch to black and white" or "focus on my essay" go on to the router.
+    let window_request = winctl::parse(text).filter(|r| match r {
+        winctl::Request::One(_, q) => {
+            let name = it(&engine, q).or_else(|| resolve_one(&engine, q, &aliases)).map(|t| t.name).unwrap_or_else(|| q.clone());
+            winctl::has_window(&name)
+        }
+        winctl::Request::MinimizeAll => true,
+    });
+    if let Some(request) = window_request {
         let shown = match &request {
             winctl::Request::One(_, q) => it(&engine, q).or_else(|| resolve_one(&engine, q, &aliases)).map(|t| t.name).unwrap_or_else(|| q.clone()),
             winctl::Request::MinimizeAll => String::new(),
@@ -290,10 +305,6 @@ fn handle_dump(app: &AppHandle, text: &str) -> Reply {
         log_err(engine.store().add_item(Some(dump), "instant", &said, "", status, &said));
         changed(app);
         return if status == "done" { Reply::Opened { name: said } } else { Reply::Error { message: said } };
-    }
-    // Fastest path: media, volume, YouTube, Spotify, web search, lock. No model.
-    if let Some(q) = quick::parse(text) {
-        return run_quick(app, Some(dump), q);
     }
     // Fast path: a plain "open X" skips the model so it feels instant.
     if let Some(query) = launcher::parse_open(text) {
@@ -317,15 +328,14 @@ fn handle_dump(app: &AppHandle, text: &str) -> Reply {
         .collect();
     pairs.drain(..pairs.len().saturating_sub(4));
     // Today's and tomorrow's schedule, so "what's on today?" gets real times.
-    let schedule = engine
-        .store()
-        .today_range()
-        .ok()
-        .and_then(|(from, to)| {
-            let after = format!("{}T00:00", engine.store().day_after(&to[..10]).ok()?);
-            engine.store().blocks(&from, &after).ok()
-        })
-        .unwrap_or_default()
+    // One store call per statement: holding the store's lock while locking it again would deadlock.
+    let range = engine.store().today_range().ok();
+    let after = range.as_ref().and_then(|(_, to)| engine.store().day_after(to.get(..10)?).ok());
+    let blocks = match (range, after) {
+        (Some((from, _)), Some(after)) => engine.store().blocks(&from, &format!("{after}T00:00")).unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    let schedule = blocks
         .iter()
         .map(|b| format!("- {} to {}: {} ({})", b.start, b.end.get(11..).unwrap_or(&b.end), b.title, b.kind))
         .collect::<Vec<_>>()
@@ -1107,6 +1117,7 @@ fn wake_loop(app: &AppHandle) {
     let mut follow: Option<Instant> = None; // after "Yes sir?": until when the next words count without "Engine"
     let mut warmed = false;
     let mut said = String::new(); // what's been said since "Yes sir?"
+    let mut spoke_during = false; // Engine was talking during the current burst
     loop {
         std::thread::sleep(Duration::from_millis(STEP_MS as u64));
         if !wake::ENABLED.load(std::sync::atomic::Ordering::Relaxed) {
@@ -1151,9 +1162,19 @@ fn wake_loop(app: &AppHandle) {
         if following {
             let _ = app.emit("voice-level", level);
         }
+        // Remember whether Engine spoke at any point during this burst: by the time the burst ends (after half a
+        // second of quiet) the speech may have stopped.
+        if voice::PLAYING.load(std::sync::atomic::Ordering::Relaxed) {
+            spoke_during = true;
+        }
         let Some((from, to)) = gate.push(level, rec.len(), rec.rate, STEP_MS) else {
-            if !gate.in_speech() && rec.len() > rec.rate as usize * 10 {
-                rec.clear(); // keep memory flat between bursts
+            if !gate.in_speech() {
+                if !voice::PLAYING.load(std::sync::atomic::Ordering::Relaxed) {
+                    spoke_during = false;
+                }
+                if rec.len() > rec.rate as usize * 10 {
+                    rec.clear(); // keep memory flat between bursts
+                }
             }
             continue;
         };
@@ -1161,7 +1182,7 @@ fn wake_loop(app: &AppHandle) {
         rec.clear();
         gate.reset();
         // While Engine is talking, the mic hears Engine too: a burst then only counts as "Engine, stop".
-        let over_speech = voice::PLAYING.load(std::sync::atomic::Ordering::Relaxed);
+        let over_speech = std::mem::take(&mut spoke_during);
         if following {
             voice_event(app, "transcribing", "");
         }
@@ -1357,23 +1378,22 @@ fn narrator(app: AppHandle, lines: std::sync::mpsc::Receiver<narrate::Line>) {
     use std::time::{Duration, Instant};
     let engine = app.state::<Engine>();
     let mut pacer = narrate::Pacer::default();
-    while let Ok(first) = lines.recv() {
-        let mut batch = vec![first];
-        batch.extend(lines.try_iter());
-        // "Talk me through tasks" off silences the progress words only: answers asked for aloud and reminders
-        // are still said.
+    // "Talk me through tasks" off silences the progress words only (answers asked for aloud and reminders are still
+    // said); cues are said at once, unpaced, since they were asked for. Run on every batch of lines taken in.
+    let sort = |batch: &mut Vec<Line>, pacer: &mut narrate::Pacer| {
         if !engine.settings().voice.narrate {
             batch.retain(|l| !matches!(l, Line::Word(_)));
-            if batch.is_empty() {
-                continue;
-            }
         }
-        // Cues first, unpaced: they were asked for.
         for cue in batch.iter().filter_map(|l| if let Line::Cue(c) = l { Some(*c) } else { None }) {
             say_short(&engine, cue);
             pacer.spoke(Instant::now());
         }
         batch.retain(|l| !matches!(l, Line::Cue(_)));
+    };
+    while let Ok(first) = lines.recv() {
+        let mut batch = vec![first];
+        batch.extend(lines.try_iter());
+        sort(&mut batch, &mut pacer);
         if batch.is_empty() {
             continue;
         }
@@ -1384,7 +1404,9 @@ fn narrator(app: AppHandle, lines: std::sync::mpsc::Receiver<narrate::Line>) {
             }
             std::thread::sleep(Duration::from_millis(200));
         }
-        batch.extend(lines.try_iter());
+        let mut late: Vec<Line> = lines.try_iter().collect();
+        sort(&mut late, &mut pacer);
+        batch.extend(late);
         let overviews: Vec<String> = batch.iter().filter_map(|l| if let Line::Overview(t) = l { Some(t.clone()) } else { None }).collect();
         if overviews.is_empty() {
             // Only the newest progress word still matters.

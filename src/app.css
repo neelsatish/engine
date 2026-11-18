@@ -198,6 +198,67 @@ svg.ico {
   stroke-linejoin: round;
 }
 
+/* Briefing, Schedule and Settings inside a terminal tile: sections are ruled groups, not floating cards. */
+.view-body .card.glass {
+  margin-bottom: 10px;
+  padding: 8px 10px 2px;
+  border: 1px dashed rgb(128 128 160 / 0.28);
+  border-radius: var(--r-md);
+  background: transparent;
+  backdrop-filter: none;
+}
+
+.view-body .card h2,
+.view-body .label {
+  color: var(--pane-label);
+  font-size: 12px;
+  font-weight: 400;
+  text-transform: lowercase;
+}
+
+.view-body .card h2::before {
+  content: "── ";
+  color: var(--pane-border);
+}
+
+.view-body .count {
+  min-width: 0;
+  padding: 0 4px;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: inherit;
+}
+
+.view-body .count::before {
+  content: "(";
+}
+
+.view-body .count::after {
+  content: ")";
+}
+
+.view-body .button,
+.view-body .chip,
+.view-body .link {
+  text-transform: lowercase;
+}
+
+.view-body pre {
+  font-size: 13px !important;
+}
+
+/* Switches square, like the tiles. */
+.switch,
+.switch span {
+  border-radius: var(--r-sm) !important;
+}
+
+kbd {
+  border-radius: var(--r-sm);
+}
+
 /* Small controls in the chat's prompt bar (folder, model, cloud/local). */
 .tool-chip {
   display: inline-flex;

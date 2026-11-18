@@ -116,7 +116,10 @@ pub fn recent(pairs: &[(String, String)]) -> String {
 /// Whether a dump talks about sending, posting, deleting or paying, so the stronger model should sort it.
 pub fn sounds_outward(dump: &str) -> bool {
     let d = dump.to_lowercase();
-    ["send", "reply", "email", "message", "post", "tweet", "upload", "publish", "delete", "remove", "pay", "buy", "order", "share"]
+    [
+        "send", "sending", "reply", "email", "message", "messages", "text", "forward", "post", "tweet", "upload", "publish",
+        "delete", "remove", "pay", "buy", "order", "share", "invite", "dm",
+    ]
         .iter()
         .any(|w| d.split(|c: char| !c.is_alphanumeric()).any(|x| x == *w))
 }
@@ -126,7 +129,7 @@ pub fn sounds_outward(dump: &str) -> bool {
 /// `now` is "… YYYY-MM-DDTHH:MM"-style text from the store; `add_minutes` shifts a time.
 pub fn tidy(mut items: Vec<Item>, dump: &str, now: &str, add_minutes: impl Fn(&str, i64) -> Option<String>) -> Vec<Item> {
     let said = dump.to_lowercase();
-    let now = now.split_whitespace().find(|w| w.len() >= 16 && w.as_bytes()[10] == b'T').map(|w| &w[..16]).unwrap_or("");
+    let now = now.split_whitespace().find(|w| w.as_bytes().get(10) == Some(&b'T')).and_then(|w| w.get(..16)).unwrap_or("");
     for item in &mut items {
         if let Some(reply) = item.reply.as_mut() {
             let trimmed = reply.trim_start().strip_prefix("Engine:").map(str::trim_start).unwrap_or(reply.trim_start()).to_string();
@@ -142,8 +145,8 @@ pub fn tidy(mut items: Vec<Item>, dump: &str, now: &str, add_minutes: impl Fn(&s
         if item.project.as_deref().is_some_and(|p| !said.contains(&p.to_lowercase())) {
             item.project = None;
         }
-        if let Some(when) = item.when.as_deref().filter(|w| w.len() >= 16 && !now.is_empty() && &w[..16] < now) {
-            item.when = add_minutes(&when[..16], 24 * 60).or(item.when.clone());
+        if let Some(when) = item.when.as_deref().and_then(|w| w.get(..16)).filter(|w| !now.is_empty() && *w < now) {
+            item.when = add_minutes(when, 24 * 60).or(item.when.clone());
         }
     }
     items

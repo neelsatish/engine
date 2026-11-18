@@ -75,7 +75,9 @@ pub fn small_talk(input: &str) -> Option<&'static str> {
 /// "Timer 10 minutes", "set a timer for 90 seconds", "5 minute timer": the minutes (rounded up), or None.
 pub fn timer(input: &str) -> Option<u32> {
     let s = clean(input);
-    if !s.contains("timer") {
+    // "Cancel my 10 minute timer" or "how long is left on the timer" isn't a new timer.
+    let asking = ["cancel", "stop", "delete", "remove", "how", "what", "when", "is "].iter().any(|w| s.starts_with(w));
+    if !s.contains("timer") || asking {
         return None;
     }
     let words: Vec<&str> = s.split(|c: char| c.is_whitespace() || c == '-').filter(|w| !w.is_empty()).collect();
@@ -94,10 +96,15 @@ pub fn timer(input: &str) -> Option<u32> {
         })
     };
     let mut total = 0.0;
+    let mut skip = 0; // words already used by the number before them ("half an hour": the "an")
     for (i, w) in words.iter().enumerate() {
+        if i < skip {
+            continue;
+        }
         let Some(n) = number(w) else { continue };
         let unit = words.get(i + 1).copied().unwrap_or_default();
-        let unit = if unit == "an" { words.get(i + 2).copied().unwrap_or_default() } else { unit };
+        let (unit, used) = if unit == "an" || unit == "a" { (words.get(i + 2).copied().unwrap_or_default(), i + 3) } else { (unit, i + 2) };
+        skip = used;
         total += match unit.trim_end_matches('s') {
             "minute" | "min" => n,
             "second" | "sec" => n / 60.0,
@@ -118,9 +125,10 @@ pub fn clear_chat(input: &str) -> bool {
 /// "Mark all briefings as completed", "clear the briefing": clears every finished or waiting item.
 pub fn clear_briefing(input: &str) -> bool {
     let s = clean(input);
-    let about = ["briefing", "briefings", "items", "tasks", "everything", "all"].iter().any(|w| s.split_whitespace().any(|x| x == *w));
-    let clear = ["clear", "mark all", "mark everything", "complete all", "dismiss all"].iter().any(|w| s.starts_with(w));
-    let done = s.starts_with("clear") || ["done", "completed", "complete", "finished", "read"].iter().any(|w| s.ends_with(w));
+    // Must name the briefing: "mark all my emails as read" or "clear all my downloads" isn't about Engine.
+    let about = s.split_whitespace().any(|x| x == "briefing" || x == "briefings");
+    let clear = ["clear", "mark all", "mark everything", "mark my", "mark the", "complete all", "dismiss all", "empty"].iter().any(|w| s.starts_with(w));
+    let done = s.starts_with("clear") || s.starts_with("empty") || ["done", "completed", "complete", "finished", "read"].iter().any(|w| s.ends_with(w));
     about && clear && done
 }
 
@@ -306,7 +314,11 @@ mod tests {
         assert!(clear_chat("Clear the chat.") && !clear_briefing("clear the chat") && !clear_chat("clear the briefing"));
         assert!(clear_briefing("Mark all briefings as completed"));
         assert!(clear_briefing("clear the briefing"));
-        assert!(clear_briefing("mark everything as done"));
+        assert!(clear_briefing("mark my briefing as done"));
+        assert!(!clear_briefing("mark all my emails as read") && !clear_briefing("clear all my downloads"));
+        assert_eq!(timer("set a timer for half an hour"), Some(30));
+        assert_eq!(timer("cancel my 10 minute timer"), None);
+        assert_eq!(timer("how long is left on the timer"), None);
         assert!(!clear_briefing("mark the meeting in my calendar"));
         assert_eq!(parse("play"), Some(Quick::Media(Media::PlayPause)));
         assert_eq!(parse("make me a playlist for studying"), None);

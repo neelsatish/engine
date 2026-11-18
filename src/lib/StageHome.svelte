@@ -42,7 +42,7 @@
     ["agents", p ? name(p.models.agent) : "…"],
     ["answers", p ? name(p.models.answer) : "…"],
     ["brain", p?.local_ai ? "local · qwen3 8b" : "cloud · claude"],
-    ["voice", `${String(v.model ?? "…")} · ${v.engine === "kokoro" ? "british" : String(v.engine ?? "")}`],
+    ["voice", `${String(v.model ?? "…")} · ${v.engine === "chatterbox" ? "chatterbox" : "british"}`],
     ["wake", v.wake === false ? "off" : "say “engine”"],
     ["folder", p?.folder ? (p.folder.split(/[\\/]/).filter(Boolean).pop() ?? p.folder) : "none"],
     ["tasks", `${working.length} running · ${waiting.length} queued`],

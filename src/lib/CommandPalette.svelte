@@ -175,7 +175,8 @@
   button {
     display: grid;
     grid-template-columns: 1.5ch 1fr auto;
-    align-items: center;
+    align-items: baseline;
+    line-height: 28px;
     width: 100%;
     height: 28px;
     padding: 0 8px;

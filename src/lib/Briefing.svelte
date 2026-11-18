@@ -220,7 +220,7 @@
       margin-left: 6px;
       padding: 1px 8px;
       border: 1px solid var(--border);
-      border-radius: 999px;
+      border-radius: var(--r-sm);
       font-size: 12px;
       font-weight: 500;
       vertical-align: 1px;
@@ -259,7 +259,7 @@
       border-radius: var(--r-md);
       color: var(--text-secondary);
       font: inherit;
-      font-size: 14px;
+      font-size: 13px;
       white-space: pre-wrap;
       overflow-wrap: anywhere;
       user-select: text;

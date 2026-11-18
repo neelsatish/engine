@@ -460,7 +460,7 @@
   .block.dragging {
     z-index: 2;
     cursor: grabbing;
-    box-shadow: 0 6px 20px rgb(0 0 0 / 0.4);
+    box-shadow: none;
     transition: none;
   }
 
@@ -527,7 +527,7 @@
     z-index: 5;
     padding: var(--space-md);
     background: rgb(19 16 28 / 0.95);
-    box-shadow: 0 16px 48px rgb(0 0 0 / 0.55);
+    box-shadow: 0 0 0 1px var(--pane-border);
   }
 
   .editor .title {
