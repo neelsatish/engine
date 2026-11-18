@@ -7,5 +7,10 @@ fn main() {
     if std::env::args().nth(1).as_deref() == Some("--guard") {
         std::process::exit(engine_lib::jobs::guard());
     }
+    // `engine --mcp` is Engine's own MCP server for agents (schedule, briefing, settings).
+    if std::env::args().nth(1).as_deref() == Some("--mcp") {
+        engine_lib::mcp::serve();
+        return;
+    }
     engine_lib::run()
 }

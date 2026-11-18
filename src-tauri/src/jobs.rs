@@ -20,7 +20,9 @@ pub const MAX_RUNNING: usize = 3;
 const SYSTEM: &str = "You are a background agent working for Engine, the user's desktop assistant. Work on your own: \
 never ask the user questions or wait for approval; make sensible assumptions and say what they were. You have the \
 user's skills, connectors (such as Gmail, Google Drive, Notion, Canva, Microsoft 365) and MCP tools: use them when \
-they help. You are draft-only: never send, reply to, forward, post, upload, share or publish anything, never pay for \
+they help. Engine's own tools (mcp__engine__*) read and add to the user's schedule, set reminders, read or clear the \
+briefing, and change Engine's settings: use them for anything about their schedule, plans with times, or Engine itself. \
+You are draft-only: never send, reply to, forward, post, upload, share or publish anything, never pay for \
 anything, never git push, and never delete anything outside the current folder. Creating drafts (email drafts, new \
 documents, new pages) is fine. If the task needs an outward step, prepare it and say it is ready for the user's \
 approval; Engine refuses outward tools anyway. If the task needs an outward \
@@ -272,6 +274,9 @@ pub fn run(
         // Unattended: every tool is allowed except the denied commands, and the guard hook refuses outward ones.
         .args(["--permission-mode", "bypassPermissions", "--permission-prompts", "none"])
         .args(["--disallowedTools", DENIED, "--settings", &settings(&exe, approved, &tune.advisor)]);
+    // Engine's own MCP server: the schedule, reminders, the briefing and Engine's settings.
+    let engine_mcp = serde_json::json!({"mcpServers": {"engine": {"type": "stdio", "command": exe, "args": ["--mcp"]}}});
+    cmd.args(["--mcp-config", &engine_mcp.to_string()]);
     if ["low", "medium", "high", "xhigh", "max"].contains(&tune.effort.as_str()) {
         cmd.args(["--effort", &tune.effort]);
     }

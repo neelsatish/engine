@@ -1,6 +1,8 @@
 pub mod ai;
+pub mod control;
 pub mod jobs;
 pub mod launcher;
+pub mod mcp;
 pub mod narrate;
 pub mod ptt;
 pub mod quick;
@@ -295,7 +297,21 @@ fn handle_dump(app: &AppHandle, text: &str) -> Reply {
         .map(|i| (i.said, i.result))
         .collect();
     pairs.drain(..pairs.len().saturating_sub(4));
-    let prompt = router::prompt(text, &shortcuts, &projects, &now, &router::recent(&pairs));
+    // Today's and tomorrow's schedule, so "what's on today?" gets real times.
+    let schedule = engine
+        .store()
+        .today_range()
+        .ok()
+        .and_then(|(from, to)| {
+            let after = format!("{}T00:00", engine.store().day_after(&to[..10]).ok()?);
+            engine.store().blocks(&from, &after).ok()
+        })
+        .unwrap_or_default()
+        .iter()
+        .map(|b| format!("- {} to {}: {} ({})", b.start, b.end.get(11..).unwrap_or(&b.end), b.title, b.kind))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let prompt = router::prompt(text, &shortcuts, &projects, &now, &router::recent(&pairs), &schedule);
     // The clipboard goes straight to the answers and jobs that need it, rather than through the router.
     let clip = mentions_clipboard(text)
         .then(|| {
@@ -412,6 +428,30 @@ fn start(app: &AppHandle, engine: &Engine, dump: i64, aliases: &[Target], folder
     match item.kind {
         Kind::Instant if quick::parse(&item.detail).is_some() => {
             run_quick(app, Some(dump), quick::parse(&item.detail).expect("checked above"));
+        }
+        Kind::Control => {
+            let setting = item.setting.clone().unwrap_or_default();
+            let (status, said) = match control(app, &setting, item.value.as_deref().unwrap_or_default()) {
+                Ok(m) => ("done", m),
+                Err(e) => ("failed", e),
+            };
+            log_err(engine.store().add_item(Some(dump), "instant", &item.title, "", status, &said));
+        }
+        Kind::Schedule => {
+            let start: String = item.when.clone().unwrap_or_default().chars().take(16).collect();
+            if !schedule::valid_time(&start) {
+                add("failed", "Couldn't work out when. Try \"gym tomorrow at 6 for an hour\".");
+                return;
+            }
+            let minutes = item.minutes.unwrap_or(60).clamp(5, 24 * 60);
+            let end = engine.store().add_minutes(&start, minutes).unwrap_or_else(|_| start.clone());
+            let kind = if schedule::KINDS.contains(&item.detail.as_str()) { item.detail.clone() } else { "other".into() };
+            let block = schedule::Block { title: item.title.clone(), start: start.clone(), end: end.clone(), kind, ..Default::default() };
+            if log_err(engine.store().save_block(block)).is_some() {
+                let text = format!("Added to your schedule: {} {}–{}", item.title, start.replace('T', " "), end.get(11..).unwrap_or(&end));
+                log_err(engine.store().add_item(Some(dump), "instant", &item.title, "", "done", &text));
+                let _ = app.emit("schedule", ());
+            }
         }
         Kind::Reminder => {
             let Some(when) = item.when.clone().filter(|w| schedule::valid_time(&w.chars().take(16).collect::<String>())) else {
@@ -1462,6 +1502,40 @@ async fn set_local_ai(on: bool, app: AppHandle) -> Result<bool, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// Engine changing itself, asked in words: clearing the briefing or chat, or a setting (theme, model, advisor,
+/// effort, voice, wake word, Local AI). Returns what to tell the person.
+fn control(app: &AppHandle, setting: &str, value: &str) -> Result<String, String> {
+    let engine = app.state::<Engine>();
+    let plural = |n: usize| if n == 1 { "" } else { "s" };
+    match setting {
+        "clear_briefing" => {
+            let n = engine.store().clear_briefing().map_err(|e| e.to_string())?;
+            changed(app);
+            Ok(format!("Cleared {n} item{} from the briefing", plural(n)))
+        }
+        "clear_chat" => {
+            let n = engine.store().clear_chat().map_err(|e| e.to_string())?;
+            changed(app);
+            Ok(format!("Cleared {n} message{} from the chat", plural(n)))
+        }
+        _ => {
+            let mut s = engine.settings();
+            let was_local = s.local_ai;
+            let said = control::tweak(&mut s, setting, value)?;
+            if s.local_ai != was_local {
+                if s.local_ai {
+                    ai::start_local()?;
+                    std::thread::spawn(ai::warm_local);
+                } else {
+                    ai::stop_local();
+                }
+            }
+            save_settings(s, app.clone())?;
+            Ok(said)
+        }
+    }
+}
+
 #[tauri::command]
 fn manage_connectors() -> Result<(), String> {
     launcher::launch("https://claude.ai/settings/connectors").map_err(|e| e.to_string())
@@ -1632,6 +1706,23 @@ pub fn run() {
                     std::thread::spawn(move || heard(&app));
                 },
             );
+
+            // An agent changed something through Engine's MCP server: reload the briefing, schedule and settings.
+            let watcher = app.handle().clone();
+            std::thread::spawn(move || {
+                let note = mcp::change_note(&watcher.state::<Engine>().work_dir);
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    if fs::remove_file(&note).is_ok() {
+                        let engine = watcher.state::<Engine>();
+                        let saved = engine.settings();
+                        wake::ENABLED.store(saved.voice.wake, std::sync::atomic::Ordering::Relaxed);
+                        let _ = watcher.emit("settings", &saved);
+                        let _ = watcher.emit("schedule", ());
+                        changed(&watcher);
+                    }
+                }
+            });
 
             // Due reminders become Windows notifications.
             let ticker = app.handle().clone();

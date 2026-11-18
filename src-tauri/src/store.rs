@@ -131,6 +131,11 @@ impl Store {
         self.0.query_row("SELECT text FROM dumps WHERE id = ?1", [id], |r| r.get(0)).optional().map(Option::unwrap_or_default)
     }
 
+    /// Clears the chat: finished and failed items go; anything still running or waiting on the person stays.
+    pub fn clear_chat(&self) -> Result<usize> {
+        self.0.execute("UPDATE items SET status = 'dismissed' WHERE status IN ('done', 'failed')", [])
+    }
+
     /// Clears the briefing: every item that isn't queued or running is marked dismissed. Returns how many.
     pub fn clear_briefing(&self) -> Result<usize> {
         self.0.execute("UPDATE items SET status = 'dismissed' WHERE status IN ('done', 'held', 'failed')", [])

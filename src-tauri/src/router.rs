@@ -15,6 +15,10 @@ pub enum Kind {
     Outward,
     /// A reminder at a time, shown as a Windows notification.
     Reminder,
+    /// Something put on the schedule for a stretch of time.
+    Schedule,
+    /// A change to Engine itself: its theme, model, briefing, chat.
+    Control,
 }
 
 impl Kind {
@@ -25,6 +29,8 @@ impl Kind {
             Kind::Job => "job",
             Kind::Outward => "outward",
             Kind::Reminder => "reminder",
+            Kind::Schedule => "schedule",
+            Kind::Control => "control",
         }
     }
 }
@@ -47,6 +53,14 @@ pub struct Item {
     /// model call is needed.
     #[serde(default)]
     pub reply: Option<String>,
+    /// For a schedule item: how long, in minutes.
+    #[serde(default)]
+    pub minutes: Option<i64>,
+    /// For a control item: which setting, and its new value.
+    #[serde(default)]
+    pub setting: Option<String>,
+    #[serde(default)]
+    pub value: Option<String>,
 }
 
 pub const MODEL: &str = "haiku";
@@ -59,6 +73,8 @@ Kinds:
 - answer: chat, and anything a single written reply can fully deliver with no tools, no web, and none of the person's files or accounts: small talk ("hi", "what's up", "wsp", "how are you", "thanks"), a quick question, an explanation, a plan, ideas, a draft text. detail: the complete question with every fact the person gave, written so it stands alone (use the recent conversation to fill in what "it" or "that" means). reply: when the answer is short and you are sure of it (small talk, a quick fact, a yes or no, a one-line explanation), write the reply itself here, as Engine: friendly, natural and brief, one to three sentences, plain text. Leave reply out for anything longer or that needs care: plans, drafts, detailed explanations.
 - job: work that needs tools: the person's files, projects, notes or documents, their email or other accounts, the web, or running code. An AI agent does it on its own: it can search and read the web, read and write files, run commands, and open websites, apps and files when it finishes. detail: complete instructions for that agent, including the person's own words. project: when the job is about one of the person's projects, that project's name exactly as listed; leave it out otherwise.
 - reminder: the person wants to be reminded of something at a time ("remind me in 20 minutes to stretch", "remind me at 6pm to call mum"). title: what to remind them of. when: the local time it's due, "YYYY-MM-DDTHH:MM", worked out from Now.
+- schedule: put something on the person's schedule for a stretch of time ("gym tomorrow at 6 for an hour", "block 3 to 5 for revision"). title: what it is. when: the start, "YYYY-MM-DDTHH:MM", worked out from Now. minutes: how long (60 if not said). detail: one of study, deadline, test, recording, other.
+- control: change Engine itself. setting is one of: clear_briefing, clear_chat, theme (value velvet or mono; "black and white" is mono), model (value haiku, sonnet, opus, fable, gpt-6.1-sol, gpt-6-astra, gpt-6.1-terra or gpt-6-luna), advisor (value none, fable or opus), effort (value default, low, medium, high, xhigh or max), local_ai (value on or off), voice (value kokoro or chatterbox), wake (value on or off). value: the new value (leave out for clear_briefing and clear_chat). detail: what changes, in a few words.
 - outward: anything other people will see or that cannot be undone: sending or replying to a message, posting, uploading, publishing, deleting, paying. detail: exactly what would happen.
 
 Rules:
@@ -68,16 +84,21 @@ Rules:
 - Never put a folder or file path in detail unless the person wrote it. You don't know where agents will work, and they know their own folder.
 - One item per distinct request. Do not invent, merge or skip requests. A greeting in front of a request ("hey Engine, open Spotify") is ignored; a greeting or small talk on its own is an answer, so Engine replies.
 - Only treat something as an app, site or folder when the person clearly asks to open, launch or go to it. Never read slang or abbreviations as app names: "wsp" and "sup" mean "what's up", not WhatsApp.
+- Questions about the schedule ("what's on today?", "when's my test?") are answers: reply with the times from Schedule below.
 - title: a short imperative under 60 characters, in the person's language."#;
 
-pub const SCHEMA: &str = r#"{"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"kind":{"type":"string","enum":["instant","answer","job","outward","reminder"]},"title":{"type":"string"},"detail":{"type":"string"},"url":{"type":"string"},"project":{"type":"string"},"when":{"type":"string"},"reply":{"type":"string"}},"required":["kind","title","detail"]}}},"required":["items"]}"#;
+pub const SCHEMA: &str = r#"{"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"kind":{"type":"string","enum":["instant","answer","job","outward","reminder","schedule","control"]},"title":{"type":"string"},"detail":{"type":"string"},"url":{"type":"string"},"project":{"type":"string"},"when":{"type":"string"},"reply":{"type":"string"},"minutes":{"type":"integer"},"setting":{"type":"string"},"value":{"type":"string"}},"required":["kind","title","detail"]}}},"required":["items"]}"#;
 
 /// The router's message: the time, the person's shortcut and project names, the last few chat exchanges, then
 /// their dump.
-pub fn prompt(dump: &str, shortcuts: &[String], projects: &[String], now: &str, recent: &str) -> String {
+pub fn prompt(dump: &str, shortcuts: &[String], projects: &[String], now: &str, recent: &str, schedule: &str) -> String {
     let projects = if projects.is_empty() { "(none)".to_string() } else { projects.join(", ") };
     let recent = if recent.is_empty() { "(none)" } else { recent };
-    format!("Now: {now}\nShortcuts: {}\nProjects: {projects}\n\nRecent conversation:\n{recent}\n\nDump:\n{dump}", shortcuts.join(", "))
+    let schedule = if schedule.is_empty() { "(nothing today or tomorrow)" } else { schedule };
+    format!(
+        "Now: {now}\nShortcuts: {}\nProjects: {projects}\nSchedule (today and tomorrow):\n{schedule}\n\nRecent conversation:\n{recent}\n\nDump:\n{dump}",
+        shortcuts.join(", ")
+    )
 }
 
 /// The last few exchanges, oldest first, as "Person: … / Engine: …" lines, each cut short. `pairs` is (said, reply).
@@ -202,7 +223,7 @@ mod tests {
         let text = recent(&pairs);
         assert!(text.starts_with("Person: hi\nEngine: Hey!\nPerson: long"));
         assert!(text.ends_with('…') && text.len() < 900);
-        assert!(prompt("yo", &[], &[], "now", "").contains("Recent conversation:\n(none)"));
+        assert!(prompt("yo", &[], &[], "now", "", "").contains("Recent conversation:\n(none)"));
     }
 
     #[test]
@@ -222,7 +243,7 @@ mod tests {
                 &std::env::temp_dir(),
                 MODEL,
                 SYSTEM,
-                &prompt(dump, &["gmail".into(), "youtube".into()], &["my app".into()], "Monday 2026-11-16T15:00", ""),
+                &prompt(dump, &["gmail".into(), "youtube".into()], &["my app".into()], "Monday 2026-11-16T15:00", "", ""),
                 Some(SCHEMA),
             );
             let items = parse(out.unwrap()).unwrap();

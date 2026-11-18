@@ -47,6 +47,16 @@ their names cut into thin borders.
   - "close Spotify", "quit Discord": closes an app gracefully (it can still ask to save);
   - timers: "timer 10 minutes", "set a timer for 90 seconds" (said aloud when done, like reminders);
   - small talk ("hi", "wsp", "thanks") gets an instant reply, and "clear the briefing" clears finished items.
+- **Window control:** "switch to Discord", "minimize Chrome", "maximize Spotify", "snap Opera left", "minimize
+  everything". "Close it" and "minimize that" mean whatever was opened last.
+- **"What's on my screen?"** (or "summarize this page"): Engine steps aside, takes a screenshot (kept in
+  `%APPDATA%\com.engine.desktop\screens`), and an agent looks at it and answers.
+- **Engine runs itself:** say or type "clear the chat", "clear the briefing", "switch to black and white", "use Opus
+  with a Fable advisor", "set effort to max", "turn the wake word off", "add gym tomorrow at 6 for an hour", or ask
+  "what's on today?" (it sees today's and tomorrow's schedule). Agents get the same powers through Engine's own MCP
+  server, `engine --mcp`: `schedule_list`, `schedule_add`, `remind`, `briefing_list`, `briefing_clear`, `chat_clear`
+  and `change_setting`. The open app refreshes within two seconds of an agent's change.
+- **Themes:** Velvet (purple) or black and white, from the top bar or Settings › General.
 - **Speed tiers:** rules first (instant, no model), then the router. With Local AI on, Qwen3 8B sorts requests in
   about 1.5 s instead of about 5 s for Claude through the CLI, except anything that sounds like sending, posting or
   deleting, which Claude sorts.
