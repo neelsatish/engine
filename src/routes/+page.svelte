@@ -9,6 +9,7 @@
   import { onMount, tick } from "svelte";
   import Briefing from "$lib/Briefing.svelte";
   import Chat from "$lib/Chat.svelte";
+  import CommandPalette from "$lib/CommandPalette.svelte";
   import LoadPanel from "$lib/LoadPanel.svelte";
   import MatrixRain from "$lib/MatrixRain.svelte";
   import Orb from "$lib/Orb.svelte";
@@ -114,6 +115,7 @@
 <svelte:window onkeydown={onKey} />
 
 <MatrixRain />
+<CommandPalette />
 
 <main class:home={engine.view === "home"}>
   <header data-tauri-drag-region>

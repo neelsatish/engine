@@ -73,6 +73,25 @@ impl Engine {
         apps.clone()
     }
 
+    /// Names Whisper should expect: Engine, the common app names, your shortcuts, and your installed apps' short
+    /// names, so "open Obsidian" isn't heard as "open a bison". Capped, since a long list hurts recognition.
+    fn hotwords(&self) -> String {
+        let mut names: Vec<String> = ["Engine", "Claude", "ChatGPT", "Codex", "Spotify", "YouTube", "Gmail", "GitHub"].map(String::from).to_vec();
+        let shortcuts = self.aliases().unwrap_or_default();
+        let apps = self.apps.lock().unwrap().clone(); // only what's indexed: never wait on indexing here
+        for t in shortcuts.iter().chain(&apps) {
+            let n = t.name.trim();
+            let short = n.split_whitespace().count() <= 2 && n.len() >= 3 && n.chars().all(|c| c.is_alphanumeric() || c == ' ');
+            if short && !n.to_lowercase().contains("uninstall") && !names.iter().any(|x| x.eq_ignore_ascii_case(n)) {
+                names.push(n.to_string());
+            }
+            if names.len() >= 25 {
+                break;
+            }
+        }
+        names.join(", ")
+    }
+
     fn aliases(&self) -> Result<Vec<Target>, Reply> {
         launcher::load_aliases(&self.aliases_path).map_err(|e| Reply::Error {
             message: format!("aliases.json has a mistake in it: {e}"),
@@ -216,10 +235,10 @@ fn handle_dump(app: &AppHandle, text: &str) -> Reply {
         changed(app);
         return Reply::Opened { name: done };
     }
-    if quick::clear_briefing(text) {
-        let n = log_err(engine.store().clear_briefing()).unwrap_or(0);
-        let done = format!("Cleared {n} item{} from the briefing", if n == 1 { "" } else { "s" });
-        log_err(engine.store().add_item(Some(dump), "instant", "Clear the briefing", "", "done", &done));
+    let clear = if quick::clear_chat(text) { Some("clear_chat") } else { quick::clear_briefing(text).then_some("clear_briefing") };
+    if let Some(what) = clear {
+        let done = control(app, what, "").unwrap_or_else(|e| e);
+        log_err(engine.store().add_item(Some(dump), "instant", text, "", "done", &done));
         changed(app);
         return Reply::Opened { name: done };
     }
@@ -633,6 +652,9 @@ fn run_job(app: &AppHandle, job: store::Job) {
             let added = add_plan(app, &title, &done.summary, done.schedule);
             let summary = if added > 0 { format!("{summary}\n\nAdded {added} blocks to your schedule.") } else { summary };
             log_err(engine.store().finish(id, "done", &summary));
+            if !talk {
+                voice::cue(&engine.work_dir.join("voice"), voice::Cue::Done); // a chime, not words: speech is only on request
+            }
             if talk {
                 tell(narrate::Line::Overview(format!("Done: {title}. {}", narrate::overview(&done.summary))));
             }
@@ -640,6 +662,9 @@ fn run_job(app: &AppHandle, job: store::Job) {
         }
         Err(e) => {
             log_err(engine.store().finish(id, "failed", &e));
+            if !talk {
+                voice::cue(&engine.work_dir.join("voice"), voice::Cue::Failed);
+            }
             if talk {
                 tell(narrate::Line::Overview(format!("{} didn't finish. It's in your briefing.", job_title(&engine, id))));
             }
@@ -983,7 +1008,8 @@ fn listen_loop(app: &AppHandle, live: bool) {
         if voice::write_wav(&wav, &audio, rate).is_err() {
             continue;
         }
-        let Ok(segments) = engine.with_helper(|h| h.segments(&wav, &model)) else { continue };
+        let hot = engine.hotwords();
+        let Ok(segments) = engine.with_helper(|h| h.segments(&wav, &model, &hot)) else { continue };
         let (mut phrases, mut until) = voice::finished(&segments, audio.len() as f32 / rate as f32);
         // A complete instant command ("open Claude", "pause") runs the moment it's heard, without waiting for
         // the pause after it.
@@ -1140,7 +1166,7 @@ fn wake_loop(app: &AppHandle) {
             voice_event(app, "transcribing", "");
         }
         let model = engine.settings().voice.model;
-        let heard = voice::write_wav(&wav, &audio, rec.rate).and_then(|()| engine.with_helper(|h| h.transcribe(&wav, &model)));
+        let heard = voice::write_wav(&wav, &audio, rec.rate).and_then(|()| { let hot = engine.hotwords(); engine.with_helper(|h| h.transcribe(&wav, &model, &hot)) });
         let _ = fs::remove_file(&wav); // the words are used, the recording isn't kept
         let heard = heard.unwrap_or_default();
         if over_speech {
@@ -1219,7 +1245,7 @@ fn stop_listening(app: &AppHandle) -> Result<String, String> {
     voice::write_wav(&wav, &rest, rate)?;
     voice_event(app, "transcribing", "");
     let model = engine.settings().voice.model;
-    let text = engine.with_helper(|h| h.transcribe(&wav, &model));
+    let text = { let hot = engine.hotwords(); engine.with_helper(|h| h.transcribe(&wav, &model, &hot)) };
     let _ = fs::remove_file(&wav); // the words are kept, the recording isn't
     voice_event(app, "idle", "");
     text

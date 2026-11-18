@@ -242,8 +242,8 @@ impl Helper {
     }
 
     /// Timed pieces of speech in `wav`: (start seconds, end seconds, text).
-    pub fn segments(&mut self, wav: &Path, model: &str) -> Result<Vec<(f32, f32, String)>, String> {
-        let reply = self.call(&json!({"cmd": "segments", "path": wav, "model": model}))?;
+    pub fn segments(&mut self, wav: &Path, model: &str, hotwords: &str) -> Result<Vec<(f32, f32, String)>, String> {
+        let reply = self.call(&json!({"cmd": "segments", "path": wav, "model": model, "hotwords": hotwords}))?;
         Ok(reply["segments"]
             .as_array()
             .map(|list| {
@@ -257,8 +257,8 @@ impl Helper {
             .unwrap_or_default())
     }
 
-    pub fn transcribe(&mut self, wav: &Path, model: &str) -> Result<String, String> {
-        let reply = self.call(&json!({"cmd": "transcribe", "path": wav, "model": model}))?;
+    pub fn transcribe(&mut self, wav: &Path, model: &str, hotwords: &str) -> Result<String, String> {
+        let reply = self.call(&json!({"cmd": "transcribe", "path": wav, "model": model, "hotwords": hotwords}))?;
         Ok(reply["text"].as_str().unwrap_or_default().trim().to_string())
     }
 }
@@ -333,20 +333,45 @@ pub fn play(wav: &Path) {
     PLAYING.store(false, Ordering::Relaxed);
 }
 
-/// A short soft beep that says "listening", written once next to Engine's other voice files and played without
-/// waiting.
+/// Short sound cues, made once as WAVs next to Engine's other voice files and played without waiting.
+#[derive(Clone, Copy)]
+pub enum Cue {
+    /// Two quick rising notes: Engine is listening.
+    Listening,
+    /// A soft rising chime: an agent finished.
+    Done,
+    /// Two low falling notes: something failed.
+    Failed,
+}
+
+/// Plays a sound cue.
 pub fn beep(dir: &Path) {
-    let path = dir.join("listening.wav");
+    cue(dir, Cue::Listening);
+}
+
+pub fn cue(dir: &Path, cue: Cue) {
+    // Windows plays one sound at a time: a cue would cut Engine off mid-sentence.
+    if PLAYING.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    let (name, notes, each_ms): (&str, &[f32], usize) = match cue {
+        Cue::Listening => ("listening.wav", &[880.0, 1320.0], 45),
+        Cue::Done => ("done.wav", &[659.0, 988.0, 1319.0], 70),
+        Cue::Failed => ("failed.wav", &[392.0, 294.0], 110),
+    };
+    let path = dir.join(name);
     if !path.is_file() {
-        // 90 ms of two quick rising tones, faded in and out so it never clicks.
+        // Each note faded in and out so it never clicks.
         let rate = 24_000u32;
-        let n = rate as usize * 9 / 100;
-        let samples: Vec<f32> = (0..n)
-            .map(|i| {
-                let t = i as f32 / rate as f32;
-                let f = if i < n / 2 { 880.0 } else { 1320.0 };
-                let edge = (i.min(n - i) as f32 / (rate as f32 * 0.008)).min(1.0);
-                (2.0 * std::f32::consts::PI * f * t).sin() * 0.18 * edge
+        let per = rate as usize * each_ms / 1000;
+        let samples: Vec<f32> = notes
+            .iter()
+            .flat_map(|&f| {
+                (0..per).map(move |i| {
+                    let t = i as f32 / rate as f32;
+                    let edge = (i.min(per - i) as f32 / (rate as f32 * 0.008)).min(1.0);
+                    (2.0 * std::f32::consts::PI * f * t).sin() * 0.16 * edge
+                })
             })
             .collect();
         if write_wav(&path, &samples, rate).is_err() {

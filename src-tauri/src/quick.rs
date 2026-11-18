@@ -108,6 +108,13 @@ pub fn timer(input: &str) -> Option<u32> {
     (total > 0.0).then(|| total.ceil() as u32)
 }
 
+/// "Clear the chat", "clear the conversation": clears finished messages from the chat.
+pub fn clear_chat(input: &str) -> bool {
+    let s = clean(input);
+    ["clear chat", "clear the chat", "clear my chat", "clear the conversation", "clear conversation", "clear history", "clear the history"]
+        .contains(&s.as_str())
+}
+
 /// "Mark all briefings as completed", "clear the briefing": clears every finished or waiting item.
 pub fn clear_briefing(input: &str) -> bool {
     let s = clean(input);
@@ -296,6 +303,7 @@ mod tests {
         assert_eq!(timer("5 minute timer"), Some(5));
         assert_eq!(timer("set a timer for an hour"), Some(60));
         assert_eq!(timer("what's a timer"), None);
+        assert!(clear_chat("Clear the chat.") && !clear_briefing("clear the chat") && !clear_chat("clear the briefing"));
         assert!(clear_briefing("Mark all briefings as completed"));
         assert!(clear_briefing("clear the briefing"));
         assert!(clear_briefing("mark everything as done"));
